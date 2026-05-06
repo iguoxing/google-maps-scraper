@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Maps Scraper</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 340px;
+      min-height: 300px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #1e40af, #7c3aed);
+      padding: 16px 18px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header svg { width: 22px; height: 22px; color: #fff; }
+    .header h1 { font-size: 15px; font-weight: 600; color: #fff; }
+
+    .status-bar {
+      padding: 10px 18px;
+      background: rgba(255,255,255,0.03);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #64748b;
+    }
+    .status-dot.running { background: #3b82f6; animation: pulse 1.5s infinite; }
+    .status-dot.completed { background: #22c55e; }
+    .status-dot.captcha { background: #eab308; }
+    .status-dot.paused { background: #f59e0b; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+    .body { padding: 16px 18px; }
+
+    .form-group { margin-bottom: 12px; }
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      color: #94a3b8;
+      margin-bottom: 4px;
+      font-weight: 500;
+    }
+    .form-group input {
+      width: 100%;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 8px 12px;
+      color: #e2e8f0;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-group input:focus {
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 2px rgba(59,130,246,0.15);
+    }
+    .form-group input::placeholder { color: #475569; }
+
+    .row { display: flex; gap: 10px; }
+    .row .form-group { flex: 1; }
+    .row .form-group:last-child { width: 90px; flex: none; }
+
+    .progress-section { margin-bottom: 14px; }
+    .progress-info {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #94a3b8;
+      margin-bottom: 6px;
+    }
+    .progress-info .green { color: #4ade80; }
+    .progress-info .red { color: #f87171; }
+    .progress-track {
+      width: 100%;
+      height: 6px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+      border-radius: 3px;
+      transition: width 0.4s;
+      width: 0%;
+    }
+    .progress-msg {
+      font-size: 11px;
+      color: #64748b;
+      margin-top: 6px;
+      line-height: 1.4;
+    }
+
+    .btn-row { display: flex; gap: 8px; }
+    .btn {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-start {
+      background: linear-gradient(135deg, #3b82f6, #7c3aed);
+      color: #fff;
+    }
+    .btn-start:hover:not(:disabled) { box-shadow: 0 2px 12px rgba(59,130,246,0.3); }
+    .btn-stop {
+      background: linear-gradient(135deg, #ef4444, #f97316);
+      color: #fff;
+    }
+    .btn-stop:hover:not(:disabled) { box-shadow: 0 2px 12px rgba(239,68,68,0.3); }
+
+    .footer {
+      padding: 10px 18px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      display: flex;
+      gap: 8px;
+    }
+    .btn-sm {
+      flex: 1;
+      padding: 7px;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px;
+      background: rgba(255,255,255,0.04);
+      color: #94a3b8;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+    .btn-sm:hover { background: rgba(255,255,255,0.08); color: #e2e8f0; }
+    .btn-sm:disabled { opacity: 0.3; cursor: not-allowed; }
+    .btn-sm svg { width: 14px; height: 14px; }
+
+    .page-warning {
+      padding: 12px 18px;
+      background: rgba(234, 179, 8, 0.1);
+      border-bottom: 1px solid rgba(234, 179, 8, 0.2);
+      color: #fbbf24;
+      font-size: 12px;
+      display: none;
+      align-items: center;
+      gap: 6px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+    <h1>Maps 数据采集</h1>
+  </div>
+
+  <div class="status-bar">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">就绪 - 请先在 Google Maps 搜索</span>
+  </div>
+
+  <div class="page-warning" id="pageWarning">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0zM12 9v4m0 4h.01"/></svg>
+    <span>请在 Google Maps 搜索结果页使用本扩展</span>
+  </div>
+
+  <div class="body">
+    <div class="form-group">
+      <label>采集数量</label>
+      <input type="number" id="maxResults" value="50" min="1" max="200">
+    </div>
+
+    <div class="progress-section" id="progressSection" style="display:none;">
+      <div class="progress-info">
+        <span>进度: <strong id="pCurrent">0</strong> / <span id="pTotal">0</span></span>
+        <span><span class="green" id="pSuccess">0</span> 成功 &nbsp; <span class="red" id="pFailed">0</span> 失败</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+      <div class="progress-msg" id="progressMsg">等待开始...</div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-start" id="btnStart">开始采集</button>
+      <button class="btn btn-stop" id="btnStop" style="display:none;">停止</button>
+    </div>
+  </div>
+
+  <div class="footer">
+    <button class="btn-sm" id="btnOpenPanel" title="打开数据面板">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7"/></svg>
+      数据面板
+    </button>
+    <button class="btn-sm" id="btnExportCSV" disabled title="导出 CSV">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+      CSV
+    </button>
+    <button class="btn-sm" id="btnExportExcel" disabled title="导出 Excel">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+      Excel
+    </button>
+    <button class="btn-sm" id="btnClear" title="清除数据">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+      清除
+    </button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

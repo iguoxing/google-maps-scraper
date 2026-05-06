@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Google Maps 数据采集工具",
+  "version": "1.0.0",
+  "description": "批量采集 Google Maps 商家信息（名称、地址、电话、评分、评论数、网站），支持导出 CSV/Excel",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "*://www.google.com/maps/*",
+    "*://www.google.com.hk/maps/*",
+    "*://maps.google.com/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "Maps Scraper"
+  },
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.google.com/maps/*",
+        "*://www.google.com.hk/maps/*",
+        "*://maps.google.com/*"
+      ],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
