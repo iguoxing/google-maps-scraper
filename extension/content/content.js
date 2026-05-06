@@ -33,28 +33,65 @@
       endOfList: 'div[aria-label*="End of results"], div[aria-label*="end"], p.fontBodyMedium:last-child',
     },
     detail: {
-      // 商家名称
+      // 商家名称 - 2024+ Google Maps 选择器
       name: 'h1.DUwDvf',
-      nameFallback: ['h1.fontHeadlineLarge', 'h1[class*="fontHeadline"]', 'div[role="main"] h1'],
+      nameFallback: [
+        'h1.fontHeadlineLarge', 
+        'h1[class*="fontHeadline"]', 
+        'div[role="main"] h1',
+        'h1.lANesb',
+        'div[class*="PIoX8"] h1',
+        '.SIpiFc h1'
+      ],
       // 评分
       rating: 'div.F7nice > span:first-child',
-      ratingFallback: ['span.BFQ3Mc', 'div[role="main"] span[role="img"]', 'div[aria-label*="star"]'],
+      ratingFallback: [
+        'span.BFQ3Mc', 
+        'div[role="main"] span[role="img"]', 
+        'div[aria-label*="star"]',
+        'span.MW4etd',
+        'div.eK4R0e',
+        'span.Aq14fc'
+      ],
       // 评论数
-      reviewCount: 'span[aria-label*="review"]',
-      reviewCountFallback: ['button[aria-label*="review"] span', 'span[aria-label*="Review"]'],
+      reviewCount: 'span[aria-label*="review" i]',
+      reviewCountFallback: [
+        'button[aria-label*="review" i] span', 
+        'span[aria-label*="Review" i]',
+        'span.FhRost',
+        'a[href*="reviews"] span',
+        'div.jANrlb'
+      ],
       // 地址
       address: 'button[data-item-id="address"]',
-      addressFallback: ['button[data-item-id^="address"]', 'button[aria-label*="Address"]', 'button[aria-label*="address"]'],
+      addressFallback: [
+        'button[data-item-id^="address"]', 
+        'button[aria-label*="Address" i]', 
+        'button[aria-label*="地址" i]',
+        'div[class*="o0Svte"] button',
+        'button[class*="CsEnBe"][data-item-id]'
+      ],
       // 电话
       phone: 'button[data-item-id^="phone"]',
-      phoneFallback: ['button[data-item-id="phone:"]', 'button[aria-label*="Phone"]', 'button[aria-label*="phone"]'],
+      phoneFallback: [
+        'button[data-item-id="phone:"]', 
+        'button[aria-label*="Phone" i]', 
+        'button[aria-label*="电话" i]',
+        'button[class*="CsEnBe"][data-item-id^="phone"]'
+      ],
       // 网站
       website: 'a[data-item-id="authority"]',
-      websiteFallback: ['a[data-tooltip*="website"]', 'a[data-item-id^="authority"]', 'a[href*="website"]'],
+      websiteFallback: [
+        'a[data-tooltip*="website" i]', 
+        'a[data-item-id^="authority"]', 
+        'a[href*="website"]',
+        'a[class*="CsEnBe"][data-item-id]',
+        'a[aria-label*="website" i]'
+      ],
     },
     page: {
-      closeDetail: 'button[aria-label*="Back"]',
-      closeDetailFallback: 'button[aria-label*="back"]',
+      closeDetail: 'button[aria-label*="Back" i]',
+      closeDetailFallback: 'button[aria-label*="back" i]',
       captcha: 'iframe[src*="recaptcha"], div[aria-label*="verify"], form[action*="recaptcha"]',
     },
   };
@@ -78,6 +115,7 @@
    * 增强版 querySelector - 支持多级 fallback
    */
   function q(sel, fallback) {
+    if (!sel) return null;
     const el = document.querySelector(sel);
     if (el) return el;
     if (!fallback) return null;
@@ -176,58 +214,99 @@
   // === 核心逻辑 ===
 
   /**
+   * 用一组选择器找到第一个匹配的元素
+   */
+  function findFirst(selectors) {
+    for (const s of selectors) {
+      try {
+        const el = document.querySelector(s);
+        if (el) return el;
+      } catch (e) { /* invalid selector, skip */ }
+    }
+    return null;
+  }
+
+  /**
    * 从详情面板提取所有数据
+   * 改进版：逐一尝试选择器、详细日志、数据清洗
    */
   function extractDetail() {
-    const nameEl = q(SEL.detail.name, SEL.detail.nameFallback);
+    log('extractDetail: 开始提取数据...');
+
+    // ======== 商家名称 ========
+    let nameEl = findFirst([SEL.detail.name, ...SEL.detail.nameFallback]);
     const name = nameEl ? nameEl.textContent.trim() : '';
 
     log(`extractDetail: name="${name}"`);
 
     if (!name) {
       log('extractDetail: 无商家名称，跳过');
+      const allH1 = document.querySelectorAll('h1');
+      log(`extractDetail: 页面有 ${allH1.length} 个 h1 元素`);
+      allH1.forEach((h, i) => {
+        log(`  h1[${i}]: class="${h.className}", text="${h.textContent.trim().substring(0, 50)}"`);
+      });
       return null;
     }
 
-    // 评分
-    const ratingEl = q(SEL.detail.rating, SEL.detail.ratingFallback);
+    // ======== 评分 ========
     let rating = '';
+    const ratingEl = findFirst([SEL.detail.rating, ...SEL.detail.ratingFallback]);
     if (ratingEl) {
       const text = ratingEl.textContent.trim();
       const m = text.match(/(\d+\.?\d*)/);
-      rating = m ? m[1] : '';
+      if (m) rating = m[1];
     }
 
-    // 评论数
-    const reviewEl = q(SEL.detail.reviewCount, SEL.detail.reviewCountFallback);
+    // ======== 评论数 ========
     let reviews = '0';
+    const reviewEl = findFirst([SEL.detail.reviewCount, ...SEL.detail.reviewCountFallback]);
     if (reviewEl) {
-      // 尝试从 aria-label 获取
-      const aria = reviewEl.getAttribute('aria-label') || '';
+      // 从 aria-label 获取（优先）
+      const aria = reviewEl.getAttribute('aria-label') || reviewEl.parentElement?.getAttribute('aria-label') || '';
       const m = aria.match(/(\d[\d,]*)\s*review/i);
       if (m) {
         reviews = m[1].replace(/,/g, '');
       } else {
-        // 尝试从文本获取
+        // 从文本获取
         const text = reviewEl.textContent.trim();
         const m2 = text.match(/(\d[\d,]*)/);
         if (m2) reviews = m2[1].replace(/,/g, '');
       }
     }
 
-    // 地址
-    const addressBtn = q(SEL.detail.address, SEL.detail.addressFallback);
-    const address = getBtnText(addressBtn).replace(/^地址[\s:]*/, '').replace(/^Address[\s:]*/i, '');
+    // ======== 地址 ========
+    let address = '';
+    const addressBtn = findFirst([SEL.detail.address, ...SEL.detail.addressFallback]);
+    if (addressBtn) {
+      // 优先从 aria-label 获取
+      const aria = addressBtn.getAttribute('aria-label') || '';
+      address = aria.replace(/^地址[\s:]*/i, '').replace(/^Address[\s:]*/i, '').trim();
+      if (!address) {
+        address = getBtnText(addressBtn).replace(/^地址[\s:]*/i, '').replace(/^Address[\s:]*/i, '').trim();
+      }
+    }
 
-    // 电话
-    const phoneBtn = q(SEL.detail.phone, SEL.detail.phoneFallback);
-    const phone = getBtnText(phoneBtn).replace(/^电话[\s:]*/, '').replace(/^Phone[\s:]*/i, '');
+    // ======== 电话 ========
+    let phone = '';
+    const phoneBtn = findFirst([SEL.detail.phone, ...SEL.detail.phoneFallback]);
+    if (phoneBtn) {
+      // 优先从 aria-label 获取
+      const aria = phoneBtn.getAttribute('aria-label') || '';
+      phone = aria.replace(/^电话[\s:]*/i, '').replace(/^Phone[\s:]*/i, '').trim();
+      if (!phone) {
+        phone = getBtnText(phoneBtn).replace(/^电话[\s:]*/i, '').replace(/^Phone[\s:]*/i, '').trim();
+      }
+    }
 
-    // 网站
-    const websiteEl = q(SEL.detail.website, SEL.detail.websiteFallback);
-    const website = websiteEl ? websiteEl.href : '';
+    // ======== 网站 ========
+    let website = '';
+    const websiteEl = findFirst([SEL.detail.website, ...SEL.detail.websiteFallback]);
+    if (websiteEl && websiteEl.href) {
+      website = websiteEl.href;
+    }
 
-    log(`extractDetail: rating="${rating}", reviews="${reviews}", address="${address ? address.substring(0, 30) + '...' : ''}", phone="${phone}", website="${website ? 'yes' : 'no'}"`);
+    log(`extractDetail: 完整数据 → name="${name}", rating="${rating}", reviews="${reviews}", address="${address.substring(0, 40)}", phone="${phone}", website="${website ? 'yes' : 'no'}"`);
 
     return { name, rating, reviews, address, phone, website };
   }
@@ -320,6 +399,7 @@
 
   /**
    * 等待详情面板数据加载完成（修复版 - 不会提前 resolve）
+   * 改进：增加多次验证，确保DOM已稳定
    */
   function waitForDetail(timeout = 12000) {
     return new Promise((resolve) => {
@@ -327,35 +407,71 @@
       const nameSel = SEL.detail.name;
       const nameFallback = SEL.detail.nameFallback;
 
+      // 验证函数：检查详情面板是否有有效数据
+      const verifyDetail = () => {
+        const el = document.querySelector(nameSel);
+        if (!el) return false;
+        
+        const text = el.textContent.trim();
+        if (text.length === 0) return false;
+        
+        // 额外检查：确保不是 "Google Maps" 或空占位符
+        if (text === 'Google Maps' || text === '地图') return false;
+        
+        return true;
+      };
+
       const check = () => {
-        const el = document.querySelector(nameSel) || q(nameSel, nameFallback);
-        if (el && el.textContent.trim().length > 0) {
-          return true;
-        }
-        return false;
+        return verifyDetail();
       };
 
       // 先立即检查一次
       if (check()) {
         log('waitForDetail: 详情已就绪（即时）');
-        resolve(true);
+        // 额外等待500ms让DOM完全稳定
+        setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            resolve(true);
+          }
+        }, 500);
         return;
       }
 
       // 轮询检查
       let elapsed = 0;
       const interval = 400;
+      let stableCount = 0;
+      let lastName = '';
+      
       const timer = setInterval(() => {
         elapsed += interval;
 
         if (resolved) return; // 已解决，不再检查
 
         if (check()) {
-          resolved = true;
-          clearInterval(timer);
-          log(`waitForDetail: 详情已就绪 (${elapsed}ms)`);
-          resolve(true);
-          return;
+          // 验证名称是否稳定（防止首次渲染后还需更新）
+          const el = document.querySelector(nameSel);
+          const currentName = el ? el.textContent.trim() : '';
+          
+          if (currentName === lastName && currentName.length > 0) {
+            stableCount++;
+          } else {
+            stableCount = 0;
+            lastName = currentName;
+          }
+          
+          // 名称稳定500ms后才认为加载完成
+          if (stableCount >= 2) {
+            resolved = true;
+            clearInterval(timer);
+            log(`waitForDetail: 详情已就绪 (${elapsed}ms), name="${currentName}"`);
+            resolve(true);
+            return;
+          }
+        } else {
+          stableCount = 0;
+          lastName = '';
         }
 
         if (elapsed >= timeout) {
@@ -455,6 +571,7 @@
     }
 
     // 第四步：逐条点击采集
+    let prevDetailName = '';  // 记录上一个详情面板的名称，用于验证
     for (let i = 0; i < limit; i++) {
       if (abortFlag) {
         send('progress', {
@@ -481,6 +598,10 @@
           continue;
         }
 
+        // 提取卡片上的商家名称（用于验证）
+        const cardNameEl = freshCards[i].querySelector('.fontHeadlineSmall, .qBF1Pd, [class*="fontHeadline"]');
+        const cardName = cardNameEl ? cardNameEl.textContent.trim() : '';
+
         // 滚动到卡片可见
         freshCards[i].scrollIntoView({ behavior: 'smooth', block: 'center' });
         await randomDelay(800, 1500);
@@ -493,12 +614,12 @@
         }
 
         // 点击卡片
-        log(`点击第 ${i + 1} 个卡片`);
+        log(`点击第 ${i + 1} 个卡片 (列表名称: "${cardName.substring(0, 30)}")`);
         freshCards[i].click();
         await randomDelay(2000, 3500);
 
-        // 等待详情加载（增加超时到 12 秒）
-        const detailReady = await waitForDetail(12000);
+        // 等待详情加载（增加超时到 15 秒）
+        const detailReady = await waitForDetail(15000);
 
         if (hasCaptcha()) {
           send('captcha', {});
@@ -514,14 +635,40 @@
           continue;
         }
 
+        // 额外等待：让所有DOM元素（地址、电话、评分等）完全渲染
+        await randomDelay(1500, 2500);
+
         // 提取数据（仅在详情正确加载后）
-        const data = extractDetail();
+        let data = extractDetail();
+        
+        // 验证数据：检查详情面板的名称是否与列表卡片匹配（模糊匹配）
         if (data && data.name) {
+          // 检查是否还是上一条的数据（说明详情面板没有更新）
+          if (prevDetailName && data.name === prevDetailName && cardName && data.name !== cardName) {
+            log(`⚠️ 第 ${i + 1} 条: 详情面板未更新！详情名称="${data.name}", 期望≈"${cardName}", 重试...`);
+            // 再等一下然后重新提取
+            await randomDelay(2000, 3000);
+            const retryData = extractDetail();
+            if (retryData && retryData.name && retryData.name !== prevDetailName) {
+              data = retryData;  // 使用重试数据
+            } else {
+              // 重试也失败了，跳过
+              failed++;
+              log(`❌ 第 ${i + 1} 条: 详情面板仍未更新，跳过`);
+              await goBackToListAndWait();
+              await randomDelay(1000, 2000);
+              prevDetailName = '';
+              continue;
+            }
+          }
+          
           send('data', { item: data, index: i });
           success++;
+          prevDetailName = data.name;
           log(`✅ 第 ${i + 1} 条: ${data.name}`);
         } else {
           failed++;
+          prevDetailName = '';
           log(`❌ 第 ${i + 1} 条: 提取失败`);
         }
 
