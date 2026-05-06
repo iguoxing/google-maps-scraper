@@ -6,7 +6,8 @@
   "permissions": [
     "activeTab",
     "storage",
-    "sidePanel"
+    "sidePanel",
+    "scripting"
   ],
   "host_permissions": [
     "*://www.google.com/maps/*",

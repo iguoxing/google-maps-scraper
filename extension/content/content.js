@@ -10,6 +10,8 @@
   if (window.__mapScraperInjected) return;
   window.__mapScraperInjected = true;
 
+  console.log('[Maps Scraper] Content script 已注入');
+
   // === 选择器 ===
   const SEL = {
     results: {
@@ -344,10 +346,12 @@
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     switch (msg.type) {
       case 'start':
+        console.log('[Maps Scraper] 收到采集指令, 目标数量:', msg.maxResults);
         startScraper(msg.maxResults || 50);
         sendResponse({ ok: true });
         break;
       case 'stop':
+        console.log('[Maps Scraper] 收到停止指令');
         stopScraper();
         sendResponse({ ok: true });
         break;
@@ -355,9 +359,14 @@
         sendResponse({ isRunning, abortFlag });
         break;
       case 'ping':
+        console.log('[Maps Scraper] pong');
         sendResponse({ alive: true });
         break;
     }
     return true; // 保持异步通道
   });
+
+  // 通知 background/service worker content script 已就绪
+  chrome.runtime.sendMessage({ type: 'contentReady' }).catch(() => {});
+  console.log('[Maps Scraper] 已就绪，等待指令...');
 })();

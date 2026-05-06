@@ -20,14 +20,42 @@ const maxResultsInput = $('maxResults');
 
 let isRunning = false;
 let collectedCount = 0;
+let contentReady = false;
 
 // 初始化
-chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-  const isMapsPage = tab && tab.url && (tab.url.includes('google.com/maps') || tab.url.includes('google.com.hk/maps'));
+chrome.tabs.query({ active: true, currentWindow: true }, async ([tab]) => {
+  if (!tab) return;
+
+  const isMapsPage = tab && tab.url && (tab.url.includes('google.com/maps') || tab.url.includes('google.com.hk/maps') || tab.url.includes('maps.google.com'));
   if (!isMapsPage) {
     pageWarning.style.display = 'flex';
     btnStart.disabled = true;
     statusText.textContent = '请在 Google Maps 页面使用';
+    return;
+  }
+
+  // 检测 content script 是否已注入
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, { type: 'ping' });
+    if (response && response.alive) {
+      contentReady = true;
+      statusText.textContent = '就绪';
+    }
+  } catch (e) {
+    // content script 未注入，尝试注入
+    statusText.textContent = '正在注入脚本...';
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content/content.js']
+      });
+      contentReady = true;
+      statusText.textContent = '就绪';
+    } catch (injectErr) {
+      statusText.textContent = '脚本注入失败，请刷新页面';
+      btnStart.disabled = true;
+      console.error('Injection failed:', injectErr);
+    }
   }
 });
 
@@ -98,15 +126,41 @@ btnStart.addEventListener('click', async () => {
   const maxResults = parseInt(maxResultsInput.value) || 50;
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab && tab.id) {
-      chrome.tabs.sendMessage(tab.id, { type: 'start', maxResults });
+    if (!tab || !tab.id) return;
+
+    // 先尝试 ping，如果失败则重新注入
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: 'ping' });
+    } catch (e) {
+      // content script 不存在，重新注入
+      statusText.textContent = '正在注入脚本...';
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content/content.js']
+        });
+        contentReady = true;
+      } catch (injectErr) {
+        statusText.textContent = '注入失败，请刷新页面重试';
+        console.error('Re-injection failed:', injectErr);
+        return;
+      }
+    }
+
+    chrome.tabs.sendMessage(tab.id, { type: 'start', maxResults }, (response) => {
+      if (chrome.runtime.lastError) {
+        statusText.textContent = '连接失败，请刷新页面重试';
+        console.error('Send failed:', chrome.runtime.lastError);
+        return;
+      }
       statusDot.className = 'status-dot running';
       statusText.textContent = '采集已启动...';
       progressSection.style.display = 'block';
       progressMsg.textContent = '正在启动采集...';
-    }
+    });
   } catch (e) {
-    statusText.textContent = '无法连接到页面，请刷新后重试';
+    statusText.textContent = '启动失败: ' + e.message;
+    console.error('Start failed:', e);
   }
 });
 
