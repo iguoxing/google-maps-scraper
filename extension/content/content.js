@@ -250,105 +250,176 @@
   }
 
   /**
+   * 查找详情面板的主容器
+   * 只在容器内提取数据，避免匹配到搜索结果页的错误元素
+   */
+  function findDetailContainer() {
+    // 策略1: role="main" 是详情页主内容区（最稳定）
+    var main = document.querySelector('div[role="main"]');
+    if (main) {
+      log('findDetailContainer: 找到 role="main" 容器');
+      return main;
+    }
+    // 策略2: 搜索结果面板不存在时，body 内第一个大容器就是详情面板
+    var feed = document.querySelector(SEL.results.panel);
+    if (!feed) {
+      var bodyMain = document.querySelector('body > div:not([class*="loading"]) > div > div');
+      if (bodyMain) {
+        log('findDetailContainer: 未找到搜索结果面板，使用 body 主容器');
+        return bodyMain;
+      }
+    }
+    // 策略3: 回退到 document
+    log('findDetailContainer: 未找到特定容器，使用 document');
+    return null;
+  }
+
+  /**
    * 从详情面板提取所有数据
-   * v3 核心策略：优先使用 aria-label 属性提取数据（最稳定）
-   *
-   * Google Maps 无障碍标注格式（英文界面）：
-   * - 地址按钮 aria-label: "Address: 123 Main St, City"
-   * - 电话按钮 aria-label: "Phone: +1 234-567-8900"
-   * - 网站按钮 aria-label: "Website: example.com"
-   * - 评分 span aria-label: "4.5 stars"
-   * - 评论数 span aria-label: "123 reviews"
-   *
-   * 中文界面：
-   * - 地址按钮 aria-label: "地址：xxx" 或 "Address: xxx"
-   * - 电话按钮 aria-label: "电话：xxx" 或 "Phone: xxx"
+   * v4 核心策略：
+   * 1. 先找到详情面板容器，只在容器内提取（避免匹配搜索结果页元素）
+   * 2. 名称：在容器内找 h1/h2，过滤掉"结果/Results/Google Maps"等无效值
+   * 3. 其他字段：优先用 aria-label，其次用容器内特定选择器
    */
   function extractDetail() {
     log('extractDetail: ========== 开始提取数据 =========');
 
-    // ========= 诊断：打印所有相关 aria-label =========
-    var allAria = document.querySelectorAll('[aria-label]');
-    log('extractDetail: 页面共有 ' + allAria.length + ' 个带 aria-label 的元素');
+    // === 第一步：找到详情面板容器 ===
+    var container = findDetailContainer();
+    var scope = container || document;
+    var scopeDesc = container ? '容器内' : '整个页面(DOM)';
+    log('extractDetail: 搜索范围 = ' + scopeDesc);
+
+    // ========= 诊断：打印容器内所有 aria-label =========
+    var allAria = scope.querySelectorAll('[aria-label]');
+    log('extractDetail: ' + scopeDesc + ' 共有 ' + allAria.length + ' 个带 aria-label 的元素');
     for (var di = 0; di < allAria.length; di++) {
       var del = allAria[di];
       var da = del.getAttribute('aria-label') || '';
       if (da && da.length > 0 && da.length < 300) {
         var tag = del.tagName || '?';
         var id = del.getAttribute('data-item-id') || '';
-        log('  [aria-label] <' + tag + '> aria="' + da + '"' + (id ? ' data-item-id="' + id + '"' : ''));
+        var cls = del.className ? del.className.substring(0, 30) : '';
+        log('  [aria-label] <' + tag + '> aria="' + da + '"' + (id ? ' data-item-id="' + id + '"' : '') + ' class="' + cls + '"');
       }
     }
-    // 同时也打印所有 button 和 a 标签的 aria-label
-    var allBtns = document.querySelectorAll('button[aria-label], a[aria-label]');
-    log('extractDetail: 共 ' + allBtns.length + ' 个 button/a 带 aria-label');
     // ========= 诊断结束 =========
 
     // ======== 商家名称 ========
-    var nameEl = findFirst([SEL.detail.name].concat(SEL.detail.nameFallback));
-    var name = nameEl ? nameEl.textContent.trim() : '';
+    // 只在容器内查找 h1/h2（避免匹配搜索结果页的"结果"标题）
+    var nameEl = null;
+    var h1List = scope.querySelectorAll('h1');
+    log('extractDetail: 在' + scopeDesc + '中找到 ' + h1List.length + ' 个 h1 元素');
+    for (var hi = 0; hi < h1List.length; hi++) {
+      var h = h1List[hi];
+      var ht = h.textContent.trim();
+      log('  h1[' + hi + ']: class="' + h.className.substring(0, 50) + '", text="' + ht.substring(0, 50) + '"');
+      // 跳过无效名称
+      if (!ht || ht.length === 0) continue;
+      if (ht === 'Google Maps' || ht === '地图' || ht === 'Maps') continue;
+      if (ht === '结果' || ht === 'Results' || ht === 'Search Results') continue;
+      if (ht.indexOf('Google') !== -1 && ht.length < 15) continue;
+      // 找到第一个有效名称
+      if (!nameEl) nameEl = h;
+    }
+    // 如果 h1 没找到，尝试 h2
+    if (!nameEl) {
+      var h2List = scope.querySelectorAll('h2');
+      log('extractDetail: h1 未找到有效名称，尝试 ' + h2List.length + ' 个 h2 元素');
+      for (var h2i = 0; h2i < h2List.length; h2i++) {
+        var h2 = h2List[h2i];
+        var h2t = h2.textContent.trim();
+        if (h2t && h2t !== '结果' && h2t !== 'Results') {
+          nameEl = h2;
+          break;
+        }
+      }
+    }
 
+    var name = nameEl ? nameEl.textContent.trim() : '';
     log('extractDetail: name="' + name + '"');
 
     if (!name || name.length === 0) {
       log('extractDetail: 无商家名称，跳过');
-      var allH1 = document.querySelectorAll('h1');
-      log('extractDetail: 页面有 ' + allH1.length + ' 个 h1 元素');
-      for (var hi = 0; hi < allH1.length; hi++) {
-        var h = allH1[hi];
-        log('  h1[' + hi + ']: class="' + h.className + '", text="' + h.textContent.trim().substring(0, 50) + '"');
-      }
       return null;
     }
 
-    // 过滤掉无效名称
-    if (name === 'Google Maps' || name === '地图' || name === 'Maps') {
+    // 过滤掉无效名称（二次检查）
+    if (name === 'Google Maps' || name === '地图' || name === 'Maps' || name === '结果' || name === 'Results') {
       log('extractDetail: 名称无效（"' + name + '"），跳过');
       return null;
     }
 
     // ======== 评分 ========
     var rating = '';
-    var ratingEl = findFirst([SEL.detail.rating].concat(SEL.detail.ratingFallback));
-    if (ratingEl) {
-      var ratingAria = ratingEl.getAttribute('aria-label') || '';
-      var ratingText = ratingEl.textContent.trim();
-      log('extractDetail: rating aria-label="' + ratingAria + '", text="' + ratingText + '"');
-
-      // 从 aria-label 提取（如 "4.5 stars" → "4.5"）
-      var ratingMatch = ratingAria.match(/(\d+\.?\d*)\s*star/i);
-      if (ratingMatch) {
-        rating = ratingMatch[1];
-      } else {
-        // 从 textContent 提取
-        var ratingMatch2 = ratingText.match(/(\d+\.?\d*)/);
-        if (ratingMatch2) rating = ratingMatch2[1];
+    // 在容器内找包含 "stars" 的 aria-label
+    var starsEls = scope.querySelectorAll('[aria-label*="stars" i], [aria-label*="星" i]');
+    log('extractDetail: 找到 ' + starsEls.length + ' 个包含 stars/星 的元素');
+    for (var si = 0; si < starsEls.length; si++) {
+      var sel = starsEls[si];
+      var sa = sel.getAttribute('aria-label') || '';
+      log('  stars[' + si + ']: aria="' + sa + '", tag=' + sel.tagName + ', text="' + sel.textContent.trim().substring(0, 20) + '"');
+      var rm = sa.match(/(\d+\.?\d*)\s*stars?/i);
+      if (rm) {
+        rating = rm[1];
+        log('extractDetail: 从 aria-label 提取 rating=' + rating);
+        break;
+      }
+      // 也尝试从 textContent 提取
+      var rm2 = sel.textContent.trim().match(/(\d+\.?\d*)/);
+      if (rm2) {
+        rating = rm2[1];
+        log('extractDetail: 从 textContent 提取 rating=' + rating);
+        break;
+      }
+    }
+    // 如果还没找到，用原选择器作为 fallback
+    if (!rating) {
+      var ratingEl = findFirst([SEL.detail.rating].concat(SEL.detail.ratingFallback));
+      if (ratingEl) {
+        var ratingAria = ratingEl.getAttribute('aria-label') || '';
+        var ratingText = ratingEl.textContent.trim();
+        log('extractDetail: rating fallback aria-label="' + ratingAria + '", text="' + ratingText + '"');
+        var ratingMatch = ratingAria.match(/(\d+\.?\d*)\s*star/i);
+        if (ratingMatch) {
+          rating = ratingMatch[1];
+        } else {
+          var ratingMatch2 = ratingText.match(/(\d+\.?\d*)/);
+          if (ratingMatch2) rating = ratingMatch2[1];
+        }
       }
     }
     log('extractDetail: rating="' + rating + '"');
 
     // ======== 评论数 ========
     var reviews = '0';
-    var reviewEl = findFirst([SEL.detail.reviewCount].concat(SEL.detail.reviewCountFallback));
-    if (reviewEl) {
-      var reviewAria = reviewEl.getAttribute('aria-label') || '';
-      var reviewParentAria = reviewEl.parentElement ? (reviewEl.parentElement.getAttribute('aria-label') || '') : '';
-      var reviewText = reviewEl.textContent.trim();
-      log('extractDetail: review aria-label="' + reviewAria + '", parent-aria="' + reviewParentAria + '", text="' + reviewText + '"');
-
-      // 从 aria-label 提取（如 "123 reviews" → "123"）
-      var reviewMatch = reviewAria.match(/([\d,]+)\s*review/i);
-      if (reviewMatch) {
-        reviews = reviewMatch[1].replace(/,/g, '');
-      } else {
-        // 尝试从父元素 aria-label
-        reviewMatch = reviewParentAria.match(/([\d,]+)\s*review/i);
+    // 在容器内找包含 "reviews" 的 aria-label
+    var reviewEls = scope.querySelectorAll('[aria-label*="reviews" i], [aria-label*="条评价" i], [aria-label*="评论" i]');
+    log('extractDetail: 找到 ' + reviewEls.length + ' 个包含 reviews/评论 的元素');
+    for (var ri = 0; ri < reviewEls.length; ri++) {
+      var rel = reviewEls[ri];
+      var ra = rel.getAttribute('aria-label') || '';
+      log('  reviews[' + ri + ']: aria="' + ra + '", tag=' + rel.tagName + ', text="' + rel.textContent.trim().substring(0, 20) + '"');
+      var rvm = ra.match(/([\d,]+)\s*reviews?/i);
+      if (rvm) {
+        reviews = rvm[1].replace(/,/g, '');
+        log('extractDetail: 从 aria-label 提取 reviews=' + reviews);
+        break;
+      }
+    }
+    // fallback
+    if (reviews === '0') {
+      var reviewEl = findFirst([SEL.detail.reviewCount].concat(SEL.detail.reviewCountFallback));
+      if (reviewEl) {
+        var reviewAria = reviewEl.getAttribute('aria-label') || '';
+        var reviewText = reviewEl.textContent.trim();
+        log('extractDetail: review fallback aria-label="' + reviewAria + '", text="' + reviewText + '"');
+        var reviewMatch = reviewAria.match(/([\d,]+)\s*review/i);
         if (reviewMatch) {
           reviews = reviewMatch[1].replace(/,/g, '');
         } else {
-          // 从 textContent 提取数字
-          reviewMatch = reviewText.match(/([\d,]+)/);
-          if (reviewMatch) reviews = reviewMatch[1].replace(/,/g, '');
+          var reviewMatch2 = reviewText.match(/([\d,]+)/);
+          if (reviewMatch2) reviews = reviewMatch2[1].replace(/,/g, '');
         }
       }
     }
@@ -356,86 +427,127 @@
 
     // ======== 地址 ========
     var address = '';
-    var addressEl = findFirst([SEL.detail.address].concat(SEL.detail.addressFallback));
-    if (addressEl) {
-      var addressAria = addressEl.getAttribute('aria-label') || '';
-      var addressText = addressEl.textContent.trim();
-      log('extractDetail: address aria-label="' + addressAria + '", text="' + addressText + '"');
-
-      // 从 aria-label 提取，去掉前缀 "Address: " 或 "地址："
-      if (addressAria) {
-        address = addressAria
+    // 在容器内找包含 "Address" 或 "地址" 的 aria-label
+    var addrEls = scope.querySelectorAll('[aria-label*="Address" i], [aria-label*="地址" i]');
+    log('extractDetail: 找到 ' + addrEls.length + ' 个包含 Address/地址 的元素');
+    for (var ai = 0; ai < addrEls.length; ai++) {
+      var ael = addrEls[ai];
+      var aa = ael.getAttribute('aria-label') || '';
+      log('  address[' + ai + ']: aria="' + aa + '", tag=' + ael.tagName + ', data-item-id="' + (ael.getAttribute('data-item-id') || '') + '"');
+      if (aa && (aa.indexOf('Address') !== -1 || aa.indexOf('地址') !== -1)) {
+        address = aa
           .replace(/^Address:\s*/i, '')
           .replace(/^地址[\uFF1A:]\s*/, '')
           .trim();
+        if (address) {
+          log('extractDetail: 从 aria-label 提取 address=' + address.substring(0, 50));
+          break;
+        }
       }
-      // 如果 aria-label 没有有效地址，尝试从按钮内部文本提取
-      if (!address && addressText) {
-        address = getBtnText(addressEl)
-          .replace(/^Address:\s*/i, '')
-          .replace(/^地址[\uFF1A:]\s*/, '')
-          .trim();
+    }
+    // fallback: 使用原选择器
+    if (!address) {
+      var addressEl = findFirst([SEL.detail.address].concat(SEL.detail.addressFallback));
+      if (addressEl) {
+        var addressAria = addressEl.getAttribute('aria-label') || '';
+        var addressText = addressEl.textContent.trim();
+        log('extractDetail: address fallback aria-label="' + addressAria + '", text="' + addressText + '"');
+        if (addressAria) {
+          address = addressAria
+            .replace(/^Address:\s*/i, '')
+            .replace(/^地址[\uFF1A:]\s*/, '')
+            .trim();
+        }
+        if (!address && addressText) {
+          address = getBtnText(addressEl)
+            .replace(/^Address:\s*/i, '')
+            .replace(/^地址[\uFF1A:]\s*/, '')
+            .trim();
+        }
       }
     }
     log('extractDetail: address="' + address.substring(0, 50) + '"');
 
     // ======== 电话 ========
     var phone = '';
-    var phoneEl = findFirst([SEL.detail.phone].concat(SEL.detail.phoneFallback));
-    if (phoneEl) {
-      var phoneAria = phoneEl.getAttribute('aria-label') || '';
-      var phoneText = phoneEl.textContent.trim();
-      log('extractDetail: phone aria-label="' + phoneAria + '", text="' + phoneText + '"');
-
-      // 从 aria-label 提取，去掉前缀 "Phone: " 或 "电话："
-      if (phoneAria) {
-        phone = phoneAria
+    // 在容器内找包含 "Phone" 或 "电话" 的 aria-label
+    var phoneEls = scope.querySelectorAll('[aria-label*="Phone" i], [aria-label*="电话" i]');
+    log('extractDetail: 找到 ' + phoneEls.length + ' 个包含 Phone/电话 的元素');
+    for (var pi = 0; pi < phoneEls.length; pi++) {
+      var pel = phoneEls[pi];
+      var pa = pel.getAttribute('aria-label') || '';
+      log('  phone[' + pi + ']: aria="' + pa + '", tag=' + pel.tagName + ', data-item-id="' + (pel.getAttribute('data-item-id') || '') + '"');
+      if (pa && (pa.indexOf('Phone') !== -1 || pa.indexOf('电话') !== -1)) {
+        phone = pa
           .replace(/^Phone:\s*/i, '')
           .replace(/^电话[\uFF1A:]\s*/, '')
           .trim();
+        if (phone) {
+          log('extractDetail: 从 aria-label 提取 phone=' + phone);
+          break;
+        }
       }
-      // 如果 aria-label 没有有效电话，尝试从按钮内部文本提取
-      if (!phone && phoneText) {
-        phone = getBtnText(phoneEl)
-          .replace(/^Phone:\s*/i, '')
-          .replace(/^电话[\uFF1A:]\s*/, '')
-          .trim();
+    }
+    // fallback
+    if (!phone) {
+      var phoneEl = findFirst([SEL.detail.phone].concat(SEL.detail.phoneFallback));
+      if (phoneEl) {
+        var phoneAria = phoneEl.getAttribute('aria-label') || '';
+        var phoneText = phoneEl.textContent.trim();
+        log('extractDetail: phone fallback aria-label="' + phoneAria + '", text="' + phoneText + '"');
+        if (phoneAria) {
+          phone = phoneAria
+            .replace(/^Phone:\s*/i, '')
+            .replace(/^电话[\uFF1A:]\s*/, '')
+            .trim();
+        }
+        if (!phone && phoneText) {
+          phone = getBtnText(phoneEl)
+            .replace(/^Phone:\s*/i, '')
+            .replace(/^电话[\uFF1A:]\s*/, '')
+            .trim();
+        }
       }
     }
     log('extractDetail: phone="' + phone + '"');
 
     // ======== 网站 ========
     var website = '';
-    var websiteEl = findFirst([SEL.detail.website].concat(SEL.detail.websiteFallback));
-    if (websiteEl) {
-      var websiteAria = websiteEl.getAttribute('aria-label') || '';
-      var websiteHref = websiteEl.href || '';
-      log('extractDetail: website aria-label="' + websiteAria + '", href="' + websiteHref + '"');
-
-      // 从 aria-label 提取 URL，格式如 "Website: example.com"
-      if (websiteAria) {
-        var websiteUrl = websiteAria
+    // 在容器内找包含 "Website" 或 "网站" 的 aria-label
+    var webEls = scope.querySelectorAll('[aria-label*="Website" i], [aria-label*="网站" i]');
+    log('extractDetail: 找到 ' + webEls.length + ' 个包含 Website/网站 的元素');
+    for (var wi = 0; wi < webEls.length; wi++) {
+      var wel = webEls[wi];
+      var wa = wel.getAttribute('aria-label') || '';
+      log('  website[' + wi + ']: aria="' + wa + '", tag=' + wel.tagName + ', href="' + (wel.href || '') + '"');
+      if (wa && (wa.indexOf('Website') !== -1 || wa.indexOf('网站') !== -1)) {
+        var webUrl = wa
           .replace(/^Website:\s*/i, '')
           .replace(/^网站[\uFF1A:]\s*/, '')
           .trim();
-        // 如果提取到的是有效 URL，使用它
-        if (websiteUrl && (websiteUrl.indexOf('http') === 0 || websiteUrl.indexOf('www.') === 0)) {
-          website = websiteUrl;
-        } else if (websiteUrl && websiteUrl.indexOf('.') > 0) {
-          // 看起来像域名，加上 https://
-          website = 'https://' + websiteUrl;
+        if (webUrl && (webUrl.indexOf('http') === 0 || webUrl.indexOf('www.') === 0)) {
+          website = webUrl;
+        } else if (webUrl && webUrl.indexOf('.') > 0) {
+          website = 'https://' + webUrl;
+        }
+        if (website) {
+          log('extractDetail: 从 aria-label 提取 website=' + website);
+          break;
         }
       }
-      // 如果 aria-label 没有有效 URL，从 href 获取
-      if (!website && websiteHref) {
-        // 排除 Google 自己的链接
-        if (websiteHref.indexOf('google.com/maps') === -1) {
+    }
+    // fallback: 从 href 获取
+    if (!website) {
+      var websiteEl = findFirst([SEL.detail.website].concat(SEL.detail.websiteFallback));
+      if (websiteEl) {
+        var websiteHref = websiteEl.href || '';
+        log('extractDetail: website fallback href="' + websiteHref + '"');
+        if (websiteHref && websiteHref.indexOf('google.com/maps') === -1) {
           website = websiteHref;
         }
-      }
-      // 如果 href 是 Google 中转链接，尝试获取 data 属性中的实际 URL
-      if (!website && websiteEl.getAttribute('data-url')) {
-        website = websiteEl.getAttribute('data-url');
+        if (!website && websiteEl.getAttribute('data-url')) {
+          website = websiteEl.getAttribute('data-url');
+        }
       }
     }
     log('extractDetail: website="' + (website ? website.substring(0, 50) : '(none)') + '"');
@@ -533,8 +645,8 @@
 
   /**
    * 等待详情面板数据加载完成
-   * v3 策略：同时等待两个条件
-   * 1. 名称元素出现且稳定（排除 "Google Maps" 等无效值）
+   * v4 策略：同时等待两个条件
+   * 1. 名称元素出现且稳定（排除 "Google Maps"/"结果" 等无效值）
    * 2. 至少一个加载指示器出现（如 "Suggest an edit" 按钮）
    */
   function waitForDetail(timeout) {
@@ -542,14 +654,20 @@
     return new Promise(function (resolve) {
       var resolved = false;
 
-      // 检查详情面板的名称是否有效
+      // 检查详情面板的名称是否有效（在容器内查找）
       var checkName = function () {
-        var el = findFirst([SEL.detail.name].concat(SEL.detail.nameFallback));
-        if (!el) return null;
-        var text = el.textContent.trim();
-        if (text.length === 0) return null;
-        if (text === 'Google Maps' || text === '地图' || text === 'Maps') return null;
-        return text;
+        var container = findDetailContainer();
+        var scope = container || document;
+        var h1List = scope.querySelectorAll('h1');
+        for (var i = 0; i < h1List.length; i++) {
+          var text = h1List[i].textContent.trim();
+          if (text.length === 0) continue;
+          if (text === 'Google Maps' || text === '地图' || text === 'Maps') continue;
+          if (text === '结果' || text === 'Results' || text === 'Search Results') continue;
+          if (text.indexOf('Google') !== -1 && text.length < 15) continue;
+          return text;
+        }
+        return null;
       };
 
       // 检查详情面板是否加载完成（关键 UI 元素出现）
@@ -866,7 +984,7 @@
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     switch (msg.type) {
       case 'start':
-        log(`收到采集指令, 目标数量: ${msg.maxResults}`);
+        log('收到采集指令, 目标数量: ' + (msg.maxResults || 50));
         startScraper(msg.maxResults || 50);
         sendResponse({ ok: true });
         break;
