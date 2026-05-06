@@ -22,6 +22,8 @@ let isRunning = false;
 let collectedCount = 0;
 let contentReady = false;
 
+function delay2k() { return new Promise(r => setTimeout(r, 2000)); }
+
 // 初始化
 chrome.tabs.query({ active: true, currentWindow: true }, async ([tab]) => {
   if (!tab) return;
@@ -147,14 +149,27 @@ btnStart.addEventListener('click', async () => {
       }
     }
 
-    chrome.tabs.sendMessage(tab.id, { type: 'start', maxResults }, (response) => {
+    chrome.tabs.sendMessage(tab.id, { type: 'start', maxResults }, async (response) => {
       if (chrome.runtime.lastError) {
         statusText.textContent = '连接失败，请刷新页面重试';
         console.error('Send failed:', chrome.runtime.lastError);
         return;
       }
+      // 发送后立即做一次诊断检查
+      await delay2k();
+      try {
+        const diag = await chrome.tabs.sendMessage(tab.id, { type: 'test' });
+        if (diag && diag.cards === 0 && diag.cardsFallback === 0) {
+          statusText.textContent = '⚠️ 未检测到搜索结果，请确认已搜索关键词';
+        } else if (diag && !diag.panel) {
+          statusText.textContent = '⚠️ 未检测到搜索结果面板，请确认在搜索结果页';
+        }
+      } catch (e) { /* ignore */ }
+
       statusDot.className = 'status-dot running';
-      statusText.textContent = '采集已启动...';
+      if (!statusText.textContent.startsWith('⚠️')) {
+        statusText.textContent = '采集已启动...';
+      }
       progressSection.style.display = 'block';
       progressMsg.textContent = '正在启动采集...';
     });
