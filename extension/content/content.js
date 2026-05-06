@@ -1,12 +1,13 @@
 /**
- * Google Maps 数据采集 - Content Script v3
+ * Google Maps 数据采集 - Content Script v5
  * 注入到 Google Maps 页面中执行采集逻辑
  *
- * 核心改动（v3）：
- * 1. extractDetail 全面改用 aria-label 策略提取数据（Google Maps 无障碍标注最稳定）
- * 2. 不再依赖 data-item-id 和混淆 CSS 类名（频繁变更）
- * 3. 增加详细的诊断日志
- * 4. 详情面板加载用 waitForKeyElement 等待关键按钮出现
+ * v5 核心改进：
+ * 1. 智能容器识别：通过检测详情面板是否实际加载了商家信息来判断
+ * 2. 多策略名称提取：h1 → h2 → class-based → 降级
+ * 3. 精准数据提取：全部基于容器内查找，不污染搜索结果页
+ * 4. 支持弹窗式+侧边栏式两种布局
+ * 5. 诊断函数内嵌在扩展中，也可F12直接粘贴使用
  */
 
 (function () {
@@ -17,107 +18,7 @@
   window.__mapScraperInjected = true;
 
   const LOG_PREFIX = '[Maps Scraper]';
-  console.log(LOG_PREFIX + ' Content script v3 已注入 (aria-label 策略)');
-
-  // === 选择器配置 ===
-  // Google Maps 频繁更改 CSS 类名（混淆名），但 aria-label 是无障碍标准，最稳定
-  const SEL = {
-    results: {
-      // 搜索结果列表面板
-      panel: 'div[role="feed"]',
-      panelFallback: 'div.m6QErb',
-      // 搜索结果卡片 - 主选择器
-      card: 'div.Nv2PK',
-      cardFallback: 'div[jsaction*="mouseover"]',
-      // 结束标记
-      endOfList: 'div[aria-label*="End of results"], div[aria-label*="end"], p.fontBodyMedium:last-child',
-    },
-    detail: {
-      // === 商家名称 ===
-      // h1.DUwDvf 是当前已知的主选择器，但 h1 作为 fallback
-      name: 'h1.DUwDvf',
-      nameFallback: [
-        'h1.fontHeadlineLarge',
-        'h1[class*="fontHeadline"]',
-        'div[role="main"] h1',
-        'h1.lANesb',
-        'div[class*="PIoX8"] h1',
-        '.SIpiFc h1',
-        'h1'
-      ],
-      // === 评分 ===
-      // 最稳定方案：aria-label 包含 " stars"，如 "4.5 stars"
-      // 同时用 Google 内部属性 role="img" 的 span 元素
-      rating: '[aria-label*=" stars"]',
-      ratingFallback: [
-        'span[role="img"][aria-label]',
-        'div.F7nice > span:first-child',
-        'span.BFQ3Mc',
-        'div[aria-label*="star"]',
-        'span.MW4etd',
-        'div.eK4R0e',
-        'span.Aq14fc'
-      ],
-      // === 评论数 ===
-      // 最稳定方案：aria-label 包含 " reviews"，如 "123 reviews"
-      reviewCount: '[aria-label*=" reviews"]',
-      reviewCountFallback: [
-        'button[aria-label*="review" i] span',
-        'span[aria-label*="Review" i]',
-        'span.FhRost',
-        'a[href*="reviews"] span',
-        'div.jANrlb'
-      ],
-      // === 地址 ===
-      // 最稳定方案：aria-label 包含 "Address:"，如 "Address: 123 Main St, City"
-      // 注意 Google 用英文 "Address:"，即使在中文界面
-      address: '[aria-label*="Address:"]',
-      addressFallback: [
-        'button[data-item-id^="address"]',
-        'button[aria-label*="地址"]',
-        'button[data-item-id="address"]',
-        'div[class*="o0Svte"] button',
-        'button[class*="CsEnBe"][data-item-id]'
-      ],
-      // === 电话 ===
-      // 最稳定方案：aria-label 包含 "Phone:"，如 "Phone: +1 234-567-8900"
-      phone: '[aria-label*="Phone:"]',
-      phoneFallback: [
-        'button[data-item-id^="phone"]',
-        'button[data-item-id="phone:"]',
-        'button[aria-label*="电话"]',
-        'button[class*="CsEnBe"][data-item-id^="phone"]'
-      ],
-      // === 网站 ===
-      // 最稳定方案：aria-label 包含 "Website:"，如 "Website: example.com"
-      // 或 data-item-id 包含 "authority"
-      website: '[aria-label*="Website:"]',
-      websiteFallback: [
-        'a[data-item-id="authority"]',
-        'a[data-item-id^="authority"]',
-        'a[data-tooltip*="website" i]',
-        'a[href*="website"]',
-        'a[class*="CsEnBe"][data-item-id]',
-        'a[aria-label*="website" i]'
-      ],
-      // === 加载完成标志 ===
-      // 等待这些元素出现表示详情面板已完全加载
-      loadedIndicator: 'button[aria-label*="reviewlegaldisclosure"]',
-      loadedIndicatorFallback: [
-        'button[data-item-id*="reviewlegaldisclosure"]',
-        'button[jsaction*="reviewlegaldisclosure"]',
-        '[aria-label*="Suggest an edit"]',
-        'button[aria-label*="Save"]',
-        '[aria-label*="Share"]',
-        '[aria-label*="Directions"]'
-      ],
-    },
-    page: {
-      closeDetail: 'button[aria-label*="Back" i]',
-      closeDetailFallback: 'button[aria-label*="back" i]',
-      captcha: 'iframe[src*="recaptcha"], div[aria-label*="verify"], form[action*="recaptcha"]',
-    },
-  };
+  console.log(LOG_PREFIX + ' Content script v5 已注入');
 
   // === 状态 ===
   let isRunning = false;
@@ -134,21 +35,31 @@
     return new Promise(r => setTimeout(r, ms));
   }
 
+  function send(type, data) {
+    try {
+      chrome.runtime.sendMessage({ type, ...data });
+    } catch (e) { /* ignore */ }
+  }
+
+  function hasCaptcha() {
+    return !!document.querySelector('iframe[src*="recaptcha"], div[aria-label*="verify"]');
+  }
+
   /**
-   * 增强版 querySelector - 支持多级 fallback
+   * 在指定容器内用一组选择器找第一个匹配
    */
-  function q(sel, fallback) {
-    if (!sel) return null;
-    const el = document.querySelector(sel);
-    if (el) return el;
-    if (!fallback) return null;
-    if (Array.isArray(fallback)) {
-      for (const f of fallback) {
-        const e = document.querySelector(f);
-        if (e) return e;
+  function queryFirst(scope, selectors) {
+    if (!scope || !selectors) return null;
+    if (typeof selectors === 'string') {
+      try { return scope.querySelector(selectors); } catch(e) { return null; }
+    }
+    if (Array.isArray(selectors)) {
+      for (const s of selectors) {
+        try {
+          const el = scope.querySelector(s);
+          if (el) return el;
+        } catch(e) { /* skip invalid */ }
       }
-    } else {
-      return document.querySelector(fallback);
     }
     return null;
   }
@@ -159,570 +70,663 @@
     return v ? v.textContent.trim() : btn.textContent.trim();
   }
 
-  function send(type, data) {
-    try {
-      chrome.runtime.sendMessage({ type, ...data });
-    } catch (e) {
-      // Extension context may be invalidated
-    }
-  }
-
-  // === 等待搜索结果面板出现 ===
-  function waitForResultsPanel(timeout = 15000) {
-    return new Promise((resolve) => {
-      log('等待搜索结果面板加载...');
-      const check = () => {
-        const panel = document.querySelector(SEL.results.panel) || document.querySelector(SEL.results.panelFallback);
-        if (panel) {
-          log('搜索结果面板已找到');
-          resolve(true);
-          return true;
-        }
-        return false;
-      };
-
-      if (check()) return;
-
-      let elapsed = 0;
-      const interval = 500;
-      const timer = setInterval(() => {
-        elapsed += interval;
-        if (check()) {
-          clearInterval(timer);
-          return;
-        }
-        if (elapsed >= timeout) {
-          clearInterval(timer);
-          log('等待搜索结果面板超时');
-          resolve(false);
-        }
-      }, interval);
-    });
-  }
-
-  // === 等待至少有 1 个卡片出现 ===
-  function waitForAtLeastOneCard(timeout = 10000) {
-    return new Promise((resolve) => {
-      log('等待搜索结果卡片出现...');
-      const check = () => {
-        const count = document.querySelectorAll(SEL.results.card).length;
-        const fbCount = document.querySelectorAll(SEL.results.cardFallback).length;
-        if (count > 0 || fbCount > 0) {
-          log(`找到 ${count} 个卡片 (${fbCount} fallback)`);
-          resolve(count > 0 ? count : fbCount);
-          return true;
-        }
-        return false;
-      };
-
-      if (check()) return;
-
-      let elapsed = 0;
-      const interval = 500;
-      const timer = setInterval(() => {
-        elapsed += interval;
-        if (check()) {
-          clearInterval(timer);
-          return;
-        }
-        if (elapsed >= timeout) {
-          clearInterval(timer);
-          log('等待卡片超时，当前 0 个');
-          resolve(0);
-        }
-      }, interval);
-    });
-  }
-
-  // === 核心逻辑 ===
-
+  // =====================================================
+  // 核心功能1：智能查找详情面板容器
+  // =====================================================
   /**
-   * 用一组选择器找到第一个匹配的元素
-   */
-  function findFirst(selectors) {
-    for (const s of selectors) {
-      try {
-        const el = document.querySelector(s);
-        if (el) return el;
-      } catch (e) { /* invalid selector, skip */ }
-    }
-    return null;
-  }
-
-  /**
-   * 查找详情面板的主容器
-   * 只在容器内提取数据，避免匹配到搜索结果页的错误元素
+   * 智能识别详情面板容器
+   *
+   * Google Maps 有多种布局，但详情面板打开时一定有这些特征：
+   * - 有商家名称（h1 或大号文字）
+   * - 有评分/按钮等交互元素
+   * - 容器可见且尺寸足够大
+   *
+   * 策略优先级：
+   * 1. role="dialog"（弹窗式）
+   * 2. aria-modal="true"
+   * 3. role="main" 内的详情区域（侧边栏式）
+   * 4. 通过关闭按钮向上找
    */
   function findDetailContainer() {
-    // 策略1: role="main" 是详情页主内容区（最稳定）
-    var main = document.querySelector('div[role="main"]');
-    if (main) {
-      log('findDetailContainer: 找到 role="main" 容器');
-      return main;
-    }
-    // 策略2: 搜索结果面板不存在时，body 内第一个大容器就是详情面板
-    var feed = document.querySelector(SEL.results.panel);
-    if (!feed) {
-      var bodyMain = document.querySelector('body > div:not([class*="loading"]) > div > div');
-      if (bodyMain) {
-        log('findDetailContainer: 未找到搜索结果面板，使用 body 主容器');
-        return bodyMain;
+    // 策略1: 弹窗式详情面板 - role="dialog"
+    var dialogs = document.querySelectorAll('div[role="dialog"]');
+    for (var di = 0; di < dialogs.length; di++) {
+      var d = dialogs[di];
+      // 检查弹窗是否可见且有内容
+      if (d.offsetHeight > 100 && d.querySelectorAll('h1, h2, button').length >= 2) {
+        log('findDetailContainer: 找到可见的 role="dialog" (高=' + d.offsetHeight + ')');
+        return d;
       }
     }
-    // 策略3: 回退到 document
+
+    // 策略1.5: aria-modal="true"
+    var modals = document.querySelectorAll('[aria-modal="true"]');
+    for (var mi = 0; mi < modals.length; mi++) {
+      var m = modals[mi];
+      if (m.offsetHeight > 100) {
+        log('findDetailContainer: 找到可见的 aria-modal (高=' + m.offsetHeight + ')');
+        return m;
+      }
+    }
+
+    // 策略2: role="main" - 但要确认不是搜索结果页
+    var main = document.querySelector('div[role="main"]');
+    if (main) {
+      // 检查 role="main" 内是否有详情面板特征（不只是搜索列表）
+      // 详情面板特征：有包含评分stars的元素，或有关闭/返回按钮
+      var hasStars = !!main.querySelector('[aria-label*="stars" i], [aria-label*="星" i]');
+      var hasCloseBtn = !!main.querySelector('button[aria-label*="Close" i], button[aria-label*="关闭" i], button[aria-label*="Back" i], button[aria-label*="back" i]');
+      var hasEditBtn = !!main.querySelector('[aria-label*="Suggest an edit" i], [aria-label*="修改" i]');
+      var hasSaveBtn = !!main.querySelector('[aria-label*="Save" i]');
+
+      if (hasStars || hasCloseBtn || hasEditBtn || hasSaveBtn) {
+        log('findDetailContainer: role="main" 包含详情特征 (stars=' + hasStars + ', close=' + hasCloseBtn + ', edit=' + hasEditBtn + ', save=' + hasSaveBtn + ')');
+        return main;
+      }
+
+      // 如果 role="main" 存在但没有详情特征，可能是详情还没加载完
+      // 检查是否有大量按钮（搜索列表页通常只有少量按钮）
+      var btns = main.querySelectorAll('button');
+      if (btns.length > 5) {
+        log('findDetailContainer: role="main" 有 ' + btns.length + ' 个按钮，可能包含详情');
+        return main;
+      }
+    }
+
+    // 策略3: 通过关闭按钮向上查找
+    var closeSelectors = [
+      'button[aria-label="Close"]', 'button[aria-label="close"]',
+      'button[aria-label*="关闭"]', 'button[aria-label*="Back"]', 'button[aria-label*="back"]'
+    ];
+    for (var ci = 0; ci < closeSelectors.length; ci++) {
+      var closeBtn = document.querySelector(closeSelectors[ci]);
+      if (closeBtn) {
+        var parent = closeBtn.parentElement;
+        for (var up = 0; up < 8 && parent; up++) {
+          if (parent.offsetWidth > 300 && parent.offsetHeight > 200) {
+            log('findDetailContainer: 通过关闭按钮找到容器 (宽=' + parent.offsetWidth + ', 高=' + parent.offsetHeight + ')');
+            return parent;
+          }
+          parent = parent.parentElement;
+        }
+      }
+    }
+
+    // 策略4: 回退到 document
     log('findDetailContainer: 未找到特定容器，使用 document');
     return null;
   }
 
+  // =====================================================
+  // 核心功能2：提取商家数据
+  // =====================================================
+
   /**
    * 从详情面板提取所有数据
-   * v4 核心策略：
-   * 1. 先找到详情面板容器，只在容器内提取（避免匹配搜索结果页元素）
-   * 2. 名称：在容器内找 h1/h2，过滤掉"结果/Results/Google Maps"等无效值
-   * 3. 其他字段：优先用 aria-label，其次用容器内特定选择器
+   *
+   * v5 策略：
+   * 1. 名称：多层级提取 + 无效值过滤
+   * 2. 评分：aria-label "stars" + 多种 fallback
+   * 3. 评论数：aria-label "reviews" + fallback
+   * 4. 地址：aria-label "Address:" + data-item-id + fallback
+   * 5. 电话：aria-label "Phone:" + data-item-id + fallback
+   * 6. 网站：aria-label "Website:" + href + fallback
    */
   function extractDetail() {
-    log('extractDetail: ========== 开始提取数据 =========');
+    log('extractDetail: ========== 开始提取 ==========');
 
-    // === 第一步：找到详情面板容器 ===
     var container = findDetailContainer();
     var scope = container || document;
-    var scopeDesc = container ? '容器内' : '整个页面(DOM)';
-    log('extractDetail: 搜索范围 = ' + scopeDesc);
-
-    // ========= 诊断：打印容器内所有 aria-label =========
-    var allAria = scope.querySelectorAll('[aria-label]');
-    log('extractDetail: ' + scopeDesc + ' 共有 ' + allAria.length + ' 个带 aria-label 的元素');
-    for (var di = 0; di < allAria.length; di++) {
-      var del = allAria[di];
-      var da = del.getAttribute('aria-label') || '';
-      if (da && da.length > 0 && da.length < 300) {
-        var tag = del.tagName || '?';
-        var id = del.getAttribute('data-item-id') || '';
-        var cls = del.className ? del.className.substring(0, 30) : '';
-        log('  [aria-label] <' + tag + '> aria="' + da + '"' + (id ? ' data-item-id="' + id + '"' : '') + ' class="' + cls + '"');
-      }
-    }
-    // ========= 诊断结束 =========
+    var scopeLabel = container ? (container.getAttribute('role') || 'container') : 'document';
+    log('extractDetail: 搜索范围 = ' + scopeLabel + (container ? ' (高=' + container.offsetHeight + ')' : ''));
 
     // ======== 商家名称 ========
-    // 只在容器内查找 h1/h2（避免匹配搜索结果页的"结果"标题）
-    var nameEl = null;
-    var h1List = scope.querySelectorAll('h1');
-    log('extractDetail: 在' + scopeDesc + '中找到 ' + h1List.length + ' 个 h1 元素');
-    for (var hi = 0; hi < h1List.length; hi++) {
-      var h = h1List[hi];
-      var ht = h.textContent.trim();
-      log('  h1[' + hi + ']: class="' + h.className.substring(0, 50) + '", text="' + ht.substring(0, 50) + '"');
-      // 跳过无效名称
-      if (!ht || ht.length === 0) continue;
-      if (ht === 'Google Maps' || ht === '地图' || ht === 'Maps') continue;
-      if (ht === '结果' || ht === 'Results' || ht === 'Search Results') continue;
-      if (ht.indexOf('Google') !== -1 && ht.length < 15) continue;
-      // 找到第一个有效名称
-      if (!nameEl) nameEl = h;
-    }
-    // 如果 h1 没找到，尝试 h2
-    if (!nameEl) {
-      var h2List = scope.querySelectorAll('h2');
-      log('extractDetail: h1 未找到有效名称，尝试 ' + h2List.length + ' 个 h2 元素');
-      for (var h2i = 0; h2i < h2List.length; h2i++) {
-        var h2 = h2List[h2i];
-        var h2t = h2.textContent.trim();
-        if (h2t && h2t !== '结果' && h2t !== 'Results') {
-          nameEl = h2;
-          break;
-        }
-      }
-    }
+    // 多层级提取策略
+    var name = extractName(scope);
 
-    var name = nameEl ? nameEl.textContent.trim() : '';
-    log('extractDetail: name="' + name + '"');
-
-    if (!name || name.length === 0) {
-      log('extractDetail: 无商家名称，跳过');
-      return null;
-    }
-
-    // 过滤掉无效名称（二次检查）
-    if (name === 'Google Maps' || name === '地图' || name === 'Maps' || name === '结果' || name === 'Results') {
-      log('extractDetail: 名称无效（"' + name + '"），跳过');
+    if (!name) {
+      log('extractDetail: 无有效商家名称，跳过');
       return null;
     }
 
     // ======== 评分 ========
-    var rating = '';
-    // 在容器内找包含 "stars" 的 aria-label
-    var starsEls = scope.querySelectorAll('[aria-label*="stars" i], [aria-label*="星" i]');
-    log('extractDetail: 找到 ' + starsEls.length + ' 个包含 stars/星 的元素');
-    for (var si = 0; si < starsEls.length; si++) {
-      var sel = starsEls[si];
-      var sa = sel.getAttribute('aria-label') || '';
-      log('  stars[' + si + ']: aria="' + sa + '", tag=' + sel.tagName + ', text="' + sel.textContent.trim().substring(0, 20) + '"');
-      var rm = sa.match(/(\d+\.?\d*)\s*stars?/i);
-      if (rm) {
-        rating = rm[1];
-        log('extractDetail: 从 aria-label 提取 rating=' + rating);
-        break;
-      }
-      // 也尝试从 textContent 提取
-      var rm2 = sel.textContent.trim().match(/(\d+\.?\d*)/);
-      if (rm2) {
-        rating = rm2[1];
-        log('extractDetail: 从 textContent 提取 rating=' + rating);
-        break;
-      }
-    }
-    // 如果还没找到，用原选择器作为 fallback
-    if (!rating) {
-      var ratingEl = findFirst([SEL.detail.rating].concat(SEL.detail.ratingFallback));
-      if (ratingEl) {
-        var ratingAria = ratingEl.getAttribute('aria-label') || '';
-        var ratingText = ratingEl.textContent.trim();
-        log('extractDetail: rating fallback aria-label="' + ratingAria + '", text="' + ratingText + '"');
-        var ratingMatch = ratingAria.match(/(\d+\.?\d*)\s*star/i);
-        if (ratingMatch) {
-          rating = ratingMatch[1];
-        } else {
-          var ratingMatch2 = ratingText.match(/(\d+\.?\d*)/);
-          if (ratingMatch2) rating = ratingMatch2[1];
-        }
-      }
-    }
-    log('extractDetail: rating="' + rating + '"');
+    var rating = extractRating(scope);
 
     // ======== 评论数 ========
-    var reviews = '0';
-    // 在容器内找包含 "reviews" 的 aria-label
-    var reviewEls = scope.querySelectorAll('[aria-label*="reviews" i], [aria-label*="条评价" i], [aria-label*="评论" i]');
-    log('extractDetail: 找到 ' + reviewEls.length + ' 个包含 reviews/评论 的元素');
-    for (var ri = 0; ri < reviewEls.length; ri++) {
-      var rel = reviewEls[ri];
-      var ra = rel.getAttribute('aria-label') || '';
-      log('  reviews[' + ri + ']: aria="' + ra + '", tag=' + rel.tagName + ', text="' + rel.textContent.trim().substring(0, 20) + '"');
-      var rvm = ra.match(/([\d,]+)\s*reviews?/i);
-      if (rvm) {
-        reviews = rvm[1].replace(/,/g, '');
-        log('extractDetail: 从 aria-label 提取 reviews=' + reviews);
-        break;
-      }
-    }
-    // fallback
-    if (reviews === '0') {
-      var reviewEl = findFirst([SEL.detail.reviewCount].concat(SEL.detail.reviewCountFallback));
-      if (reviewEl) {
-        var reviewAria = reviewEl.getAttribute('aria-label') || '';
-        var reviewText = reviewEl.textContent.trim();
-        log('extractDetail: review fallback aria-label="' + reviewAria + '", text="' + reviewText + '"');
-        var reviewMatch = reviewAria.match(/([\d,]+)\s*review/i);
-        if (reviewMatch) {
-          reviews = reviewMatch[1].replace(/,/g, '');
-        } else {
-          var reviewMatch2 = reviewText.match(/([\d,]+)/);
-          if (reviewMatch2) reviews = reviewMatch2[1].replace(/,/g, '');
-        }
-      }
-    }
-    log('extractDetail: reviews="' + reviews + '"');
+    var reviews = extractReviews(scope);
 
     // ======== 地址 ========
-    var address = '';
-    // 在容器内找包含 "Address" 或 "地址" 的 aria-label
-    var addrEls = scope.querySelectorAll('[aria-label*="Address" i], [aria-label*="地址" i]');
-    log('extractDetail: 找到 ' + addrEls.length + ' 个包含 Address/地址 的元素');
-    for (var ai = 0; ai < addrEls.length; ai++) {
-      var ael = addrEls[ai];
-      var aa = ael.getAttribute('aria-label') || '';
-      log('  address[' + ai + ']: aria="' + aa + '", tag=' + ael.tagName + ', data-item-id="' + (ael.getAttribute('data-item-id') || '') + '"');
-      if (aa && (aa.indexOf('Address') !== -1 || aa.indexOf('地址') !== -1)) {
-        address = aa
-          .replace(/^Address:\s*/i, '')
-          .replace(/^地址[\uFF1A:]\s*/, '')
-          .trim();
-        if (address) {
-          log('extractDetail: 从 aria-label 提取 address=' + address.substring(0, 50));
-          break;
-        }
-      }
-    }
-    // fallback: 使用原选择器
-    if (!address) {
-      var addressEl = findFirst([SEL.detail.address].concat(SEL.detail.addressFallback));
-      if (addressEl) {
-        var addressAria = addressEl.getAttribute('aria-label') || '';
-        var addressText = addressEl.textContent.trim();
-        log('extractDetail: address fallback aria-label="' + addressAria + '", text="' + addressText + '"');
-        if (addressAria) {
-          address = addressAria
-            .replace(/^Address:\s*/i, '')
-            .replace(/^地址[\uFF1A:]\s*/, '')
-            .trim();
-        }
-        if (!address && addressText) {
-          address = getBtnText(addressEl)
-            .replace(/^Address:\s*/i, '')
-            .replace(/^地址[\uFF1A:]\s*/, '')
-            .trim();
-        }
-      }
-    }
-    log('extractDetail: address="' + address.substring(0, 50) + '"');
+    var address = extractAddress(scope);
 
     // ======== 电话 ========
-    var phone = '';
-    // 在容器内找包含 "Phone" 或 "电话" 的 aria-label
-    var phoneEls = scope.querySelectorAll('[aria-label*="Phone" i], [aria-label*="电话" i]');
-    log('extractDetail: 找到 ' + phoneEls.length + ' 个包含 Phone/电话 的元素');
-    for (var pi = 0; pi < phoneEls.length; pi++) {
-      var pel = phoneEls[pi];
-      var pa = pel.getAttribute('aria-label') || '';
-      log('  phone[' + pi + ']: aria="' + pa + '", tag=' + pel.tagName + ', data-item-id="' + (pel.getAttribute('data-item-id') || '') + '"');
-      if (pa && (pa.indexOf('Phone') !== -1 || pa.indexOf('电话') !== -1)) {
-        phone = pa
-          .replace(/^Phone:\s*/i, '')
-          .replace(/^电话[\uFF1A:]\s*/, '')
-          .trim();
-        if (phone) {
-          log('extractDetail: 从 aria-label 提取 phone=' + phone);
-          break;
-        }
-      }
-    }
-    // fallback
-    if (!phone) {
-      var phoneEl = findFirst([SEL.detail.phone].concat(SEL.detail.phoneFallback));
-      if (phoneEl) {
-        var phoneAria = phoneEl.getAttribute('aria-label') || '';
-        var phoneText = phoneEl.textContent.trim();
-        log('extractDetail: phone fallback aria-label="' + phoneAria + '", text="' + phoneText + '"');
-        if (phoneAria) {
-          phone = phoneAria
-            .replace(/^Phone:\s*/i, '')
-            .replace(/^电话[\uFF1A:]\s*/, '')
-            .trim();
-        }
-        if (!phone && phoneText) {
-          phone = getBtnText(phoneEl)
-            .replace(/^Phone:\s*/i, '')
-            .replace(/^电话[\uFF1A:]\s*/, '')
-            .trim();
-        }
-      }
-    }
-    log('extractDetail: phone="' + phone + '"');
+    var phone = extractPhone(scope);
 
     // ======== 网站 ========
-    var website = '';
-    // 在容器内找包含 "Website" 或 "网站" 的 aria-label
-    var webEls = scope.querySelectorAll('[aria-label*="Website" i], [aria-label*="网站" i]');
-    log('extractDetail: 找到 ' + webEls.length + ' 个包含 Website/网站 的元素');
-    for (var wi = 0; wi < webEls.length; wi++) {
-      var wel = webEls[wi];
-      var wa = wel.getAttribute('aria-label') || '';
-      log('  website[' + wi + ']: aria="' + wa + '", tag=' + wel.tagName + ', href="' + (wel.href || '') + '"');
-      if (wa && (wa.indexOf('Website') !== -1 || wa.indexOf('网站') !== -1)) {
-        var webUrl = wa
-          .replace(/^Website:\s*/i, '')
-          .replace(/^网站[\uFF1A:]\s*/, '')
-          .trim();
-        if (webUrl && (webUrl.indexOf('http') === 0 || webUrl.indexOf('www.') === 0)) {
-          website = webUrl;
-        } else if (webUrl && webUrl.indexOf('.') > 0) {
-          website = 'https://' + webUrl;
-        }
-        if (website) {
-          log('extractDetail: 从 aria-label 提取 website=' + website);
-          break;
-        }
-      }
-    }
-    // fallback: 从 href 获取
-    if (!website) {
-      var websiteEl = findFirst([SEL.detail.website].concat(SEL.detail.websiteFallback));
-      if (websiteEl) {
-        var websiteHref = websiteEl.href || '';
-        log('extractDetail: website fallback href="' + websiteHref + '"');
-        if (websiteHref && websiteHref.indexOf('google.com/maps') === -1) {
-          website = websiteHref;
-        }
-        if (!website && websiteEl.getAttribute('data-url')) {
-          website = websiteEl.getAttribute('data-url');
-        }
-      }
-    }
-    log('extractDetail: website="' + (website ? website.substring(0, 50) : '(none)') + '"');
+    var website = extractWebsite(scope);
 
-    // === 汇总日志 ===
-    log('extractDetail: 完成 -> name="' + name + '", rating="' + rating + '", reviews="' + reviews + '", address="' + address.substring(0, 30) + '", phone="' + phone + '", website="' + (website ? 'yes' : 'no') + '"');
+    // ======== 汇总 ========
+    var result = {
+      name: name,
+      rating: rating,
+      reviews: reviews,
+      address: address,
+      phone: phone,
+      website: website
+    };
 
-    return { name: name, rating: rating, reviews: reviews, address: address, phone: phone, website: website };
-  }
-
-  function hasCaptcha() {
-    return !!document.querySelector(SEL.page.captcha);
+    log('extractDetail: 完成 -> ' + JSON.stringify(result));
+    return result;
   }
 
   /**
-   * 返回列表视图并等待列表恢复
+   * 提取商家名称 - 多策略
    */
-  async function goBackToListAndWait(timeout = 8000) {
-    const backBtn = q(SEL.page.closeDetail, SEL.page.closeDetailFallback);
-    if (!backBtn) {
-      log('goBackToList: 未找到返回按钮，可能已经在列表视图');
-      return true;
+  function extractName(scope) {
+    // 策略1: h1.DUwDvf（Google Maps 当前最常见的主选择器）
+    var h1 = scope.querySelector('h1.DUwDvf');
+    if (h1 && isValidName(h1.textContent.trim())) {
+      log('extractName: h1.DUwDvf -> "' + h1.textContent.trim().substring(0, 50) + '"');
+      return h1.textContent.trim();
     }
-    backBtn.click();
-    log('goBackToList: 已点击返回，等待列表恢复...');
 
-    // 等待搜索结果面板重新出现（说明已返回列表视图）
-    return waitForResultsPanel(timeout);
+    // 策略2: h1.fontHeadlineLarge
+    h1 = scope.querySelector('h1.fontHeadlineLarge');
+    if (h1 && isValidName(h1.textContent.trim())) {
+      log('extractName: h1.fontHeadlineLarge -> "' + h1.textContent.trim().substring(0, 50) + '"');
+      return h1.textContent.trim();
+    }
+
+    // 策略3: h1 with specific class patterns
+    var h1Selectors = [
+      'h1[class*="fontHeadline"]',
+      'h1.lANesb',
+      'h1'
+    ];
+    var allH1 = scope.querySelectorAll('h1');
+    for (var i = 0; i < allH1.length; i++) {
+      var text = allH1[i].textContent.trim();
+      if (isValidName(text)) {
+        log('extractName: h1[' + i + '] class="' + allH1[i].className.substring(0, 40) + '" -> "' + text.substring(0, 50) + '"');
+        return text;
+      }
+    }
+
+    // 策略4: h2 fallback
+    var allH2 = scope.querySelectorAll('h2');
+    for (var j = 0; j < allH2.length; j++) {
+      var h2text = allH2[j].textContent.trim();
+      if (isValidName(h2text)) {
+        log('extractName: h2[' + j + '] -> "' + h2text.substring(0, 50) + '"');
+        return h2text;
+      }
+    }
+
+    // 策略5: 大号文字 div（有些布局用 div 而非 h1 显示名称）
+    var bigTextSelectors = [
+      'div.fontHeadlineLarge',
+      'div[class*="fontHeadline"]',
+      'div[style*="font-size: 2"]',
+      'div[style*="font-size: 1.5"]'
+    ];
+    var bigEl = queryFirst(scope, bigTextSelectors);
+    if (bigEl && isValidName(bigEl.textContent.trim())) {
+      log('extractName: div.fontHeadlineLarge -> "' + bigEl.textContent.trim().substring(0, 50) + '"');
+      return bigEl.textContent.trim();
+    }
+
+    log('extractName: 所有策略均未找到有效名称');
+    return '';
   }
 
   /**
-   * 滚动加载更多结果
+   * 验证名称是否有效
    */
-  async function loadMoreResults(target) {
-      const cardSel = SEL.results.card;
+  function isValidName(text) {
+    if (!text || text.length === 0) return false;
+    if (text.length > 200) return false; // 太长的不太可能是名称
 
-      var prevCount = 0;
-      var noChange = 0;
+    // 已知的无效名称列表
+    var invalidNames = [
+      'Google Maps', 'Google 地图', 'Maps', '地图',
+      '结果', 'Results', 'Search Results', '搜索结果',
+      'Explore', '探索', 'Directions', '路线',
+      'Contribute', '贡献', 'Saved', '已保存',
+      'Google', 'Sign in', '登录'
+    ];
 
-      for (var attempt = 0; attempt < 30; attempt++) {
-        var currentCount = document.querySelectorAll(cardSel).length;
+    var lower = text.toLowerCase();
+    for (var i = 0; i < invalidNames.length; i++) {
+      if (lower === invalidNames[i].toLowerCase()) return false;
+    }
 
-        if (currentCount >= target) {
-          log('已加载足够结果: ' + currentCount + ' >= ' + target);
-          break;
-        }
+    // 包含 "Google" 且很短的排除
+    if (text.indexOf('Google') !== -1 && text.length < 20) return false;
 
-        // 找到 feed 面板并滚动到底部
-        var panel = document.querySelector(SEL.results.panel);
-        if (panel) {
-          // 滚动到面板底部
-          panel.scrollIntoView({ behavior: 'smooth', block: 'end' });
-          await randomDelay(300, 600);
-          // 额外向下滚动一点
-          window.scrollBy({ top: 800, behavior: 'smooth' });
-        } else {
-          window.scrollBy({ top: 1000, behavior: 'instant' });
-        }
+    // 纯数字排除
+    if (/^\d+$/.test(text)) return false;
 
-        // 等待新内容加载
-        await randomDelay(2000, 3500);
-
-        var newCount = document.querySelectorAll(cardSel).length;
-        log('滚动 attempt ' + attempt + ': ' + currentCount + ' -> ' + newCount + ' (target: ' + target + ')');
-
-        if (newCount === prevCount) {
-          noChange++;
-          // 检查是否到了列表末尾
-          var endEl = q(SEL.results.endOfList);
-          if ((endEl && noChange >= 2) || noChange >= 6) {
-            log('到底了: noChange=' + noChange + ', endEl=' + !!endEl + ', 当前 ' + newCount + ' 条');
-            break;
-          }
-        } else {
-          noChange = 0;
-          prevCount = newCount;
-        }
-
-        send('progress', {
-          status: 'running',
-          message: '滚动加载中... 已发现 ' + newCount + ' 条结果',
-          loadedCount: newCount,
-        });
-
-        if (hasCaptcha()) {
-          send('captcha', {});
-          return false;
-        }
-      }
-
-      var finalCount = document.querySelectorAll(cardSel).length;
-      log('滚动完成，共 ' + finalCount + ' 条结果');
     return true;
   }
 
   /**
-   * 等待详情面板数据加载完成
-   * v4 策略：同时等待两个条件
-   * 1. 名称元素出现且稳定（排除 "Google Maps"/"结果" 等无效值）
-   * 2. 至少一个加载指示器出现（如 "Suggest an edit" 按钮）
+   * 提取评分
+   */
+  function extractRating(scope) {
+    var rating = '';
+
+    // 策略1: aria-label 包含 "stars"
+    var starsEls = scope.querySelectorAll('[aria-label*="stars" i], [aria-label*="星" i]');
+    for (var i = 0; i < starsEls.length; i++) {
+      var aria = starsEls[i].getAttribute('aria-label') || '';
+      var match = aria.match(/(\d+\.?\d*)\s*stars?/i);
+      if (match) {
+        rating = match[1];
+        log('extractRating: aria-label stars -> ' + rating);
+        return rating;
+      }
+      // 尝试从 textContent 取
+      var text = starsEls[i].textContent.trim();
+      var match2 = text.match(/^(\d+\.?\d*)$/);
+      if (match2) {
+        rating = match2[1];
+        log('extractRating: textContent -> ' + rating);
+        return rating;
+      }
+    }
+
+    // 策略2: span[role="img"] (Google 用 role="img" 显示评分)
+    var imgEls = scope.querySelectorAll('span[role="img"][aria-label]');
+    for (var j = 0; j < imgEls.length; j++) {
+      var aria2 = imgEls[j].getAttribute('aria-label') || '';
+      var match3 = aria2.match(/(\d+\.?\d*)/);
+      if (match3 && parseFloat(match3[1]) <= 5) {
+        rating = match3[1];
+        log('extractRating: span[role=img] -> ' + rating);
+        return rating;
+      }
+    }
+
+    // 策略3: 通用 fallback 选择器
+    var fallbackSels = [
+      'span.BFQ3Mc',
+      'div.F7nice > span:first-child',
+      'span.MW4etd',
+      'div.eK4R0e',
+      'span.Aq14fc'
+    ];
+    var fbEl = queryFirst(scope, fallbackSels);
+    if (fbEl) {
+      var fbText = fbEl.textContent.trim();
+      var fbMatch = fbText.match(/(\d+\.?\d*)/);
+      if (fbMatch && parseFloat(fbMatch[1]) <= 5) {
+        rating = fbMatch[1];
+        log('extractRating: fallback -> ' + rating);
+      }
+    }
+
+    log('extractRating: final = "' + rating + '"');
+    return rating;
+  }
+
+  /**
+   * 提取评论数
+   */
+  function extractReviews(scope) {
+    var reviews = '0';
+
+    // 策略1: aria-label 包含 "reviews"
+    var reviewEls = scope.querySelectorAll('[aria-label*="reviews" i], [aria-label*="条评价" i], [aria-label*="评论" i], [aria-label*="Google reviews" i]');
+    for (var i = 0; i < reviewEls.length; i++) {
+      var aria = reviewEls[i].getAttribute('aria-label') || '';
+      var match = aria.match(/([\d,]+)\s*reviews?/i);
+      if (match) {
+        reviews = match[1].replace(/,/g, '');
+        log('extractReviews: aria-label -> ' + reviews);
+        return reviews;
+      }
+    }
+
+    // 策略2: 按钮内含 "review" 文字
+    var btnSels = [
+      'button[aria-label*="review" i] span',
+      'a[href*="reviews"] span',
+      'span[aria-label*="Review" i]'
+    ];
+    var btnEl = queryFirst(scope, btnSels);
+    if (btnEl) {
+      var btnText = btnEl.textContent.trim();
+      var btnMatch = btnText.match(/([\d,]+)/);
+      if (btnMatch) {
+        reviews = btnMatch[1].replace(/,/g, '');
+        log('extractReviews: button span -> ' + reviews);
+        return reviews;
+      }
+    }
+
+    // 策略3: 通用 fallback
+    var fbSels = ['span.FhRost', 'div.jANrlb'];
+    var fbEl = queryFirst(scope, fbSels);
+    if (fbEl) {
+      var fbText = fbEl.textContent.trim();
+      var fbMatch = fbText.match(/([\d,]+)/);
+      if (fbMatch) {
+        reviews = fbMatch[1].replace(/,/g, '');
+        log('extractReviews: fallback -> ' + reviews);
+      }
+    }
+
+    log('extractReviews: final = "' + reviews + '"');
+    return reviews;
+  }
+
+  /**
+   * 提取地址
+   */
+  function extractAddress(scope) {
+    var address = '';
+
+    // 策略1: aria-label 包含 "Address:"
+    var addrEls = scope.querySelectorAll('[aria-label*="Address" i], [aria-label*="地址" i]');
+    for (var i = 0; i < addrEls.length; i++) {
+      var aria = addrEls[i].getAttribute('aria-label') || '';
+      var dataId = addrEls[i].getAttribute('data-item-id') || '';
+
+      // 优先匹配 "Address: xxx" 格式
+      var match = aria.match(/^Address:\s*(.+)/i) || aria.match(/^地址[\uFF1A:]\s*(.+)/);
+      if (match && match[1].trim()) {
+        address = match[1].trim();
+        log('extractAddress: aria-label -> "' + address.substring(0, 60) + '"');
+        return address;
+      }
+
+      // 如果 aria-label 只是 "Address" 没有值，取 textContent
+      if ((aria.toLowerCase() === 'address' || aria.toLowerCase() === '地址') && addrEls[i].textContent.trim()) {
+        address = getBtnText(addrEls[i]).trim();
+        if (address && address.length > 5) {
+          log('extractAddress: aria-label+textContent -> "' + address.substring(0, 60) + '"');
+          return address;
+        }
+      }
+
+      // aria-label 中包含 "Address" 但格式不标准
+      if (aria.indexOf('Address') !== -1 || aria.indexOf('地址') !== -1) {
+        var cleaned = aria.replace(/^.*Address[:\s]*/i, '').replace(/^.*地址[\uFF1A:\s]*/, '').trim();
+        if (cleaned && cleaned.length > 5 && cleaned.length < 200) {
+          address = cleaned;
+          log('extractAddress: aria-label cleaned -> "' + address.substring(0, 60) + '"');
+          return address;
+        }
+      }
+    }
+
+    // 策略2: data-item-id="address" 按钮
+    var addrBtns = scope.querySelectorAll('button[data-item-id^="address"], button[data-item-id="address"]');
+    for (var j = 0; j < addrBtns.length; j++) {
+      var text = getBtnText(addrBtns[j]).trim();
+      if (text && text.length > 5 && text !== 'Address' && text !== '地址') {
+        address = text;
+        log('extractAddress: data-item-id button -> "' + address.substring(0, 60) + '"');
+        return address;
+      }
+    }
+
+    // 策略3: 通过 aria-label 为 "Copy address" 的按钮获取父级或相邻元素
+    var copyBtn = scope.querySelector('[aria-label*="Copy address" i], [aria-label*="复制地址" i]');
+    if (copyBtn) {
+      // 通常地址文字在复制按钮的上方或同级
+      var parent = copyBtn.parentElement;
+      if (parent) {
+        var prev = parent.previousElementSibling;
+        if (prev && prev.textContent.trim().length > 5) {
+          address = prev.textContent.trim();
+          log('extractAddress: near copy button -> "' + address.substring(0, 60) + '"');
+          return address;
+        }
+      }
+    }
+
+    log('extractAddress: final = "' + address.substring(0, 60) + '"');
+    return address;
+  }
+
+  /**
+   * 提取电话
+   */
+  function extractPhone(scope) {
+    var phone = '';
+
+    // 策略1: aria-label 包含 "Phone:"
+    var phoneEls = scope.querySelectorAll('[aria-label*="Phone" i], [aria-label*="电话" i]');
+    for (var i = 0; i < phoneEls.length; i++) {
+      var aria = phoneEls[i].getAttribute('aria-label') || '';
+
+      // "Phone: +1 xxx" 格式
+      var match = aria.match(/^Phone:\s*(.+)/i) || aria.match(/^电话[\uFF1A:]\s*(.+)/);
+      if (match && match[1].trim()) {
+        phone = match[1].trim();
+        log('extractPhone: aria-label -> "' + phone + '"');
+        return phone;
+      }
+
+      // aria-label 只是 "Phone"，取 textContent
+      if ((aria.toLowerCase() === 'phone' || aria.toLowerCase() === '电话') && phoneEls[i].textContent.trim()) {
+        phone = getBtnText(phoneEls[i]).trim();
+        if (phone && phone.length > 5) {
+          log('extractPhone: aria-label+textContent -> "' + phone + '"');
+          return phone;
+        }
+      }
+
+      // 不标准格式
+      if (aria.indexOf('Phone') !== -1 || aria.indexOf('电话') !== -1) {
+        var cleaned = aria.replace(/^.*Phone[:\s]*/i, '').replace(/^.*电话[\uFF1A:\s]*/, '').trim();
+        if (cleaned && cleaned.length > 5) {
+          phone = cleaned;
+          log('extractPhone: cleaned -> "' + phone + '"');
+          return phone;
+        }
+      }
+    }
+
+    // 策略2: data-item-id="phone" 按钮
+    var phoneBtns = scope.querySelectorAll('button[data-item-id^="phone"], a[data-item-id^="phone"]');
+    for (var j = 0; j < phoneBtns.length; j++) {
+      var text = getBtnText(phoneBtns[j]).trim();
+      if (text && text.length > 5 && text !== 'Phone' && text !== '电话') {
+        phone = text;
+        log('extractPhone: data-item-id -> "' + phone + '"');
+        return phone;
+      }
+    }
+
+    // 策略3: href="tel:" 链接
+    var telLinks = scope.querySelectorAll('a[href^="tel:"]');
+    if (telLinks.length > 0) {
+      phone = telLinks[0].getAttribute('href').replace('tel:', '');
+      log('extractPhone: tel: link -> "' + phone + '"');
+      return phone;
+    }
+
+    log('extractPhone: final = "' + phone + '"');
+    return phone;
+  }
+
+  /**
+   * 提取网站
+   */
+  function extractWebsite(scope) {
+    var website = '';
+
+    // 策略1: aria-label 包含 "Website:"
+    var webEls = scope.querySelectorAll('[aria-label*="Website" i], [aria-label*="网站" i], [aria-label*="web" i]');
+    for (var i = 0; i < webEls.length; i++) {
+      var el = webEls[i];
+      var aria = el.getAttribute('aria-label') || '';
+
+      // "Website: example.com" 格式
+      var match = aria.match(/^Website:\s*(.+)/i) || aria.match(/^网站[\uFF1A:]\s*(.+)/);
+      if (match && match[1].trim()) {
+        var url = match[1].trim();
+        if (url.indexOf('http') !== 0 && url.indexOf('www.') !== 0 && url.indexOf('.') > 0) {
+          url = 'https://' + url;
+        }
+        if (url.indexOf('http') === 0) {
+          website = url;
+          log('extractWebsite: aria-label -> "' + website + '"');
+          return website;
+        }
+      }
+    }
+
+    // 策略2: data-item-id="authority" 链接（Google 内部命名）
+    var authLinks = scope.querySelectorAll('a[data-item-id="authority"], a[data-item-id^="authority"]');
+    if (authLinks.length > 0) {
+      var href = authLinks[0].href || '';
+      if (href && href.indexOf('google.com/maps') === -1) {
+        website = href;
+        log('extractWebsite: authority link -> "' + website + '"');
+        return website;
+      }
+    }
+
+    // 策略3: 指向外部网站的链接（排除 google.com 域名）
+    var allLinks = scope.querySelectorAll('a[href]');
+    for (var j = 0; j < allLinks.length; j++) {
+      var link = allLinks[j];
+      var linkHref = link.href || '';
+      if (!linkHref) continue;
+      if (linkHref.indexOf('google.com') !== -1) continue;
+      if (linkHref.indexOf('gstatic.com') !== -1) continue;
+      if (linkHref.indexOf('maps.gstatic.com') !== -1) continue;
+      if (linkHref.indexOf('javascript:') === 0) continue;
+      // 有效的 URL
+      if ((linkHref.indexOf('http://') === 0 || linkHref.indexOf('https://') === 0) && linkHref.indexOf('.') > 6) {
+        website = linkHref;
+        log('extractWebsite: external link -> "' + website + '"');
+        return website;
+      }
+    }
+
+    // 策略4: data-tooltip 包含 website
+    var tipEls = scope.querySelectorAll('[data-tooltip*="website" i], [data-tooltip*="网站" i]');
+    for (var k = 0; k < tipEls.length; k++) {
+      if (tipEls[k].href && tipEls[k].href.indexOf('google.com') === -1) {
+        website = tipEls[k].href;
+        log('extractWebsite: data-tooltip link -> "' + website + '"');
+        return website;
+      }
+    }
+
+    log('extractWebsite: final = "' + (website ? website : '(none)') + '"');
+    return website;
+  }
+
+  // =====================================================
+  // 等待与导航
+  // =====================================================
+
+  function waitForResultsPanel(timeout) {
+    if (!timeout) timeout = 15000;
+    return new Promise(function(resolve) {
+      log('等待搜索结果面板加载...');
+      function check() {
+        var panel = document.querySelector('div[role="feed"]') || document.querySelector('div.m6QErb');
+        if (panel) { log('搜索结果面板已找到'); resolve(true); return true; }
+        return false;
+      }
+      if (check()) return;
+      var elapsed = 0;
+      var timer = setInterval(function() {
+        elapsed += 500;
+        if (check()) { clearInterval(timer); return; }
+        if (elapsed >= timeout) { clearInterval(timer); log('等待搜索结果面板超时'); resolve(false); }
+      }, 500);
+    });
+  }
+
+  function waitForAtLeastOneCard(timeout) {
+    if (!timeout) timeout = 10000;
+    return new Promise(function(resolve) {
+      function check() {
+        var count = document.querySelectorAll('div.Nv2PK').length;
+        var fbCount = document.querySelectorAll('div[jsaction*="mouseover"]').length;
+        if (count > 0 || fbCount > 0) { log('找到 ' + count + ' 个卡片'); resolve(count > 0 ? count : fbCount); return true; }
+        return false;
+      }
+      if (check()) return;
+      var elapsed = 0;
+      var timer = setInterval(function() {
+        elapsed += 500;
+        if (check()) { clearInterval(timer); return; }
+        if (elapsed >= timeout) { clearInterval(timer); log('等待卡片超时'); resolve(0); }
+      }, 500);
+    });
+  }
+
+  /**
+   * 等待详情面板加载完成
    */
   function waitForDetail(timeout) {
     if (!timeout) timeout = 15000;
-    return new Promise(function (resolve) {
+    return new Promise(function(resolve) {
       var resolved = false;
 
-      // 检查详情面板的名称是否有效（在容器内查找）
-      var checkName = function () {
+      function checkReady() {
         var container = findDetailContainer();
         var scope = container || document;
-        var h1List = scope.querySelectorAll('h1');
-        for (var i = 0; i < h1List.length; i++) {
-          var text = h1List[i].textContent.trim();
-          if (text.length === 0) continue;
-          if (text === 'Google Maps' || text === '地图' || text === 'Maps') continue;
-          if (text === '结果' || text === 'Results' || text === 'Search Results') continue;
-          if (text.indexOf('Google') !== -1 && text.length < 15) continue;
-          return text;
-        }
-        return null;
-      };
-
-      // 检查详情面板是否加载完成（关键 UI 元素出现）
-      var checkLoadedIndicator = function () {
-        return findFirst([SEL.detail.loadedIndicator].concat(SEL.detail.loadedIndicatorFallback));
-      };
+        // 检查是否有有效名称
+        var name = extractName(scope);
+        // 检查是否有加载指示器
+        var hasIndicator = !!(
+          scope.querySelector('[aria-label*="Suggest an edit" i]') ||
+          scope.querySelector('[aria-label*="Save" i]') ||
+          scope.querySelector('[aria-label*="Share" i]') ||
+          scope.querySelector('[aria-label*="Directions" i]') ||
+          scope.querySelector('[aria-label*="reviewlegaldisclosure" i]')
+        );
+        return { name: name, hasIndicator: hasIndicator };
+      }
 
       // 立即检查
-      var immediateName = checkName();
-      var immediateIndicator = checkLoadedIndicator();
-      if (immediateName && immediateIndicator) {
-        log('waitForDetail: 详情已就绪（即时）, name="' + immediateName + '"');
+      var immediate = checkReady();
+      if (immediate.name && immediate.hasIndicator) {
+        log('waitForDetail: 即时就绪, name="' + immediate.name + '"');
         resolved = true;
         resolve(true);
         return;
       }
 
-      // 轮询检查
       var elapsed = 0;
-      var interval = 500;
       var stableCount = 0;
       var lastName = '';
       var hadIndicator = false;
 
-      var timer = setInterval(function () {
-        elapsed += interval;
+      var timer = setInterval(function() {
+        elapsed += 500;
         if (resolved) { clearInterval(timer); return; }
 
-        var currentName = checkName();
-        var hasIndicator = !!checkLoadedIndicator();
+        var current = checkReady();
+        if (current.hasIndicator) hadIndicator = true;
 
-        if (hasIndicator) hadIndicator = true;
-
-        if (currentName) {
-          if (currentName === lastName && lastName.length > 0) {
+        if (current.name) {
+          if (current.name === lastName) {
             stableCount++;
           } else {
             stableCount = 0;
-            lastName = currentName;
+            lastName = current.name;
           }
 
-          // 条件：名称稳定 1s（2次）且出现过加载指示器
-          if (stableCount >= 2 && (hadIndicator || hasIndicator)) {
+          if (stableCount >= 2 && (hadIndicator || current.hasIndicator)) {
             resolved = true;
             clearInterval(timer);
-            log('waitForDetail: 详情已就绪 (' + elapsed + 'ms), name="' + currentName + '"');
+            log('waitForDetail: 就绪 (' + elapsed + 'ms), name="' + current.name + '"');
             resolve(true);
             return;
           }
-
-          // 降级条件：名称稳定 2s（4次），即使没有指示器也认为加载完成
           if (stableCount >= 4) {
             resolved = true;
             clearInterval(timer);
-            log('waitForDetail: 详情已就绪（降级，无指示器）(' + elapsed + 'ms), name="' + currentName + '"');
+            log('waitForDetail: 降级就绪 (' + elapsed + 'ms), name="' + current.name + '"');
             resolve(true);
             return;
           }
@@ -734,33 +738,90 @@
         if (elapsed >= timeout) {
           resolved = true;
           clearInterval(timer);
-          // 超时但名称已存在，可能还是可以提取
-          if (currentName) {
-            log('waitForDetail: 等待超时但名称已存在，尝试继续 (' + timeout + 'ms), name="' + currentName + '"');
+          if (current.name) {
+            log('waitForDetail: 超时但有名称 (' + timeout + 'ms), name="' + current.name + '"');
             resolve(true);
           } else {
-            log('waitForDetail: 等待超时 (' + timeout + 'ms)');
-            var allH1 = document.querySelectorAll('h1');
-            log('  debug: 页面有 ' + allH1.length + ' 个 h1');
-            for (var hi = 0; hi < allH1.length; hi++) {
-              var h = allH1[hi];
-              log('  h1[' + hi + ']: class="' + h.className + '", text="' + h.textContent.trim().substring(0, 30) + '"');
-            }
+            log('waitForDetail: 超时 (' + timeout + 'ms)');
             resolve(false);
           }
         }
-      }, interval);
+      }, 500);
     });
   }
 
-  /**
-   * 主采集流程
-   */
-  async function startScraper(targetCount) {
-    if (isRunning) {
-      log('采集已在运行中');
-      return;
+  async function goBackToListAndWait(timeout) {
+    if (!timeout) timeout = 8000;
+    var backBtn = document.querySelector(
+      'button[aria-label*="Back" i], button[aria-label*="back" i], ' +
+      'button[aria-label*="Close" i], button[aria-label*="close" i], ' +
+      'button[aria-label*="关闭" i]'
+    );
+    if (!backBtn) {
+      log('goBackToList: 未找到返回按钮');
+      return true;
     }
+    backBtn.click();
+    log('goBackToList: 已点击返回');
+    return waitForResultsPanel(timeout);
+  }
+
+  async function loadMoreResults(target) {
+    var cardSel = 'div.Nv2PK';
+    var prevCount = 0;
+    var noChange = 0;
+
+    for (var attempt = 0; attempt < 30; attempt++) {
+      var currentCount = document.querySelectorAll(cardSel).length;
+      if (currentCount >= target) {
+        log('已加载足够结果: ' + currentCount + ' >= ' + target);
+        break;
+      }
+
+      var panel = document.querySelector('div[role="feed"]');
+      if (panel) {
+        panel.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        await randomDelay(300, 600);
+        window.scrollBy({ top: 800, behavior: 'smooth' });
+      } else {
+        window.scrollBy({ top: 1000, behavior: 'instant' });
+      }
+
+      await randomDelay(2000, 3500);
+
+      var newCount = document.querySelectorAll(cardSel).length;
+      log('滚动 ' + attempt + ': ' + currentCount + ' -> ' + newCount + ' (target: ' + target + ')');
+
+      if (newCount === prevCount) {
+        noChange++;
+        var endEl = document.querySelector('div[aria-label*="End of results"], div[aria-label*="end"]');
+        if ((endEl && noChange >= 2) || noChange >= 6) {
+          log('到底了: ' + newCount + ' 条');
+          break;
+        }
+      } else {
+        noChange = 0;
+        prevCount = newCount;
+      }
+
+      send('progress', {
+        status: 'running',
+        message: '滚动加载中... 已发现 ' + newCount + ' 条结果',
+        loadedCount: newCount,
+      });
+
+      if (hasCaptcha()) { send('captcha', {}); return false; }
+    }
+
+    log('滚动完成，共 ' + document.querySelectorAll(cardSel).length + ' 条');
+    return true;
+  }
+
+  // =====================================================
+  // 主采集流程
+  // =====================================================
+  async function startScraper(targetCount) {
+    if (isRunning) { log('采集已在运行中'); return; }
     isRunning = true;
     abortFlag = false;
     maxResults = targetCount;
@@ -768,169 +829,104 @@
     var success = 0;
     var failed = 0;
 
-    log('启动采集，目标: ' + targetCount + ' 条');
+    log('启动采集 v5，目标: ' + targetCount + ' 条');
     send('progress', {
-      status: 'running',
-      current: 0,
-      total: 0,
-      success: 0,
-      failed: 0,
+      status: 'running', current: 0, total: 0, success: 0, failed: 0,
       message: '等待搜索结果加载...',
     });
 
-    // 第一步：等待搜索结果面板出现
+    // 1. 等待搜索结果面板
     var panelReady = await waitForResultsPanel(15000);
     if (!panelReady || abortFlag) {
-      send('progress', {
-        status: 'completed',
-        current: 0, total: 0, success: 0, failed: 0,
-        message: '未找到搜索结果面板，请确保已在 Google Maps 搜索了关键词',
-      });
+      send('progress', { status: 'completed', current: 0, total: 0, success: 0, failed: 0, message: '未找到搜索结果面板' });
       isRunning = false;
       return;
     }
 
-    // 第二步：等待至少一个卡片出现
+    // 2. 等待至少一个卡片
     var initialCards = await waitForAtLeastOneCard(10000);
     if (initialCards === 0 || abortFlag) {
-      send('progress', {
-        status: 'completed',
-        current: 0, total: 0, success: 0, failed: 0,
-        message: '搜索结果为空，请尝试其他搜索关键词',
-      });
+      send('progress', { status: 'completed', current: 0, total: 0, success: 0, failed: 0, message: '搜索结果为空' });
       isRunning = false;
       return;
     }
 
-    log('初始找到 ' + initialCards + ' 个卡片，开始滚动加载...');
-    send('progress', {
-      status: 'running',
-      current: 0, total: 0, success: 0, failed: 0,
-      message: '开始滚动加载搜索结果...',
-    });
-
-    // 第三步：滚动加载更多结果
+    // 3. 滚动加载
+    send('progress', { status: 'running', current: 0, total: 0, success: 0, failed: 0, message: '开始滚动加载...' });
     var ok = await loadMoreResults(targetCount);
-    if (!ok) {
-      isRunning = false;
-      return;
-    }
+    if (!ok) { isRunning = false; return; }
 
-    var cards = document.querySelectorAll(SEL.results.card);
+    var cards = document.querySelectorAll('div.Nv2PK');
     var limit = Math.min(cards.length, targetCount);
-
-    log('滚动完成，共 ' + cards.length + ' 个卡片，将采集 ' + limit + ' 条');
-    send('progress', {
-      status: 'running',
-      current: 0,
-      total: limit,
-      success: 0,
-      failed: 0,
-      message: '找到 ' + cards.length + ' 条结果，开始逐条采集...',
-    });
+    log('共 ' + cards.length + ' 个卡片，将采集 ' + limit + ' 条');
+    send('progress', { status: 'running', current: 0, total: limit, success: 0, failed: 0, message: '找到 ' + cards.length + ' 条，开始采集...' });
 
     if (limit === 0) {
-      send('progress', {
-        status: 'completed',
-        current: 0, total: 0, success: 0, failed: 0,
-        message: '未找到搜索结果卡片，选择器可能需要更新',
-      });
+      send('progress', { status: 'completed', current: 0, total: 0, success: 0, failed: 0, message: '未找到搜索结果卡片' });
       isRunning = false;
       return;
     }
 
-    // 第四步：逐条点击采集
-    var prevDetailName = '';  // 记录上一个详情面板的名称，用于验证
+    // 4. 逐条点击采集
+    var prevDetailName = '';
     for (var i = 0; i < limit; i++) {
       if (abortFlag) {
-        send('progress', {
-          status: 'paused',
-          current: i, total: limit, success: success, failed: failed,
-          message: '采集已暂停',
-        });
+        send('progress', { status: 'paused', current: i, total: limit, success: success, failed: failed, message: '采集已暂停' });
         isRunning = false;
         return;
       }
 
       try {
-        send('progress', {
-          status: 'running',
-          current: i + 1, total: limit, success: success, failed: failed,
-          message: '正在采集第 ' + (i + 1) + '/' + limit + ' 条...',
-        });
+        send('progress', { status: 'running', current: i + 1, total: limit, success: success, failed: failed, message: '正在采集第 ' + (i + 1) + '/' + limit + ' 条...' });
 
-        // 重新获取卡片（DOM 可能已更新）
-        var freshCards = document.querySelectorAll(SEL.results.card);
-        if (i >= freshCards.length) {
-          log('第 ' + (i + 1) + ' 条: 卡片索引超出范围 (' + freshCards.length + ')');
-          failed++;
-          continue;
-        }
+        var freshCards = document.querySelectorAll('div.Nv2PK');
+        if (i >= freshCards.length) { failed++; continue; }
 
-        // 提取卡片上的商家名称（用于验证）
         var cardNameEl = freshCards[i].querySelector('.fontHeadlineSmall, .qBF1Pd, [class*="fontHeadline"]');
         var cardName = cardNameEl ? cardNameEl.textContent.trim() : '';
 
-        // 滚动到卡片可见
         freshCards[i].scrollIntoView({ behavior: 'smooth', block: 'center' });
         await randomDelay(800, 1500);
 
-        // 检查验证码
-        if (hasCaptcha()) {
-          send('captcha', {});
-          isRunning = false;
-          return;
-        }
+        if (hasCaptcha()) { send('captcha', {}); isRunning = false; return; }
 
-        // 点击卡片
-        log('点击第 ' + (i + 1) + ' 个卡片 (列表名称: "' + cardName.substring(0, 30) + '")');
+        log('点击第 ' + (i + 1) + ' 个卡片: "' + cardName.substring(0, 30) + '"');
         freshCards[i].click();
         await randomDelay(2000, 3500);
 
-        // 等待详情加载（增加超时到 15 秒）
         var detailReady = await waitForDetail(15000);
-
-        if (hasCaptcha()) {
-          send('captcha', {});
-          isRunning = false;
-          return;
-        }
+        if (hasCaptcha()) { send('captcha', {}); isRunning = false; return; }
 
         if (!detailReady) {
-          log('第 ' + (i + 1) + ' 条: 详情加载超时，跳过本条');
+          log('第 ' + (i + 1) + ' 条: 详情加载超时');
           failed++;
           await goBackToListAndWait();
           await randomDelay(2000, 3000);
           continue;
         }
 
-        // 额外等待：让所有DOM元素（地址、电话、评分等）完全渲染
         await randomDelay(1500, 2500);
 
-        // 提取数据（仅在详情正确加载后）
         var data = extractDetail();
-        
-        // 验证数据：检查详情面板的名称是否与列表卡片匹配（模糊匹配）
+
         if (data && data.name) {
-          // 检查是否还是上一条的数据（说明详情面板没有更新）
+          // 验证详情是否更新
           if (prevDetailName && data.name === prevDetailName && cardName && data.name !== cardName) {
-            log('⚠️ 第 ' + (i + 1) + ' 条: 详情面板未更新！详情名称="' + data.name + '", 期望≈"' + cardName + '", 重试...');
-            // 再等一下然后重新提取
+            log('第 ' + (i + 1) + ' 条: 详情未更新，重试...');
             await randomDelay(2000, 3000);
             var retryData = extractDetail();
             if (retryData && retryData.name && retryData.name !== prevDetailName) {
-              data = retryData;  // 使用重试数据
+              data = retryData;
             } else {
-              // 重试也失败了，跳过
               failed++;
-              log('❌ 第 ' + (i + 1) + ' 条: 详情面板仍未更新，跳过');
+              log('第 ' + (i + 1) + ' 条: 详情仍未更新，跳过');
               await goBackToListAndWait();
               await randomDelay(1000, 2000);
               prevDetailName = '';
               continue;
             }
           }
-          
+
           send('data', { item: data, index: i });
           success++;
           prevDetailName = data.name;
@@ -941,36 +937,20 @@
           log('❌ 第 ' + (i + 1) + ' 条: 提取失败');
         }
 
-        send('progress', {
-          status: 'running',
-          current: i + 1, total: limit, success: success, failed: failed,
-          message: '已采集 ' + success + ' 条，失败 ' + failed + ' 条',
-        });
+        send('progress', { status: 'running', current: i + 1, total: limit, success: success, failed: failed, message: '已采集 ' + success + ' 条，失败 ' + failed + ' 条' });
 
-        // 返回列表并等待列表恢复
         await goBackToListAndWait();
         await randomDelay(1000, 2000);
 
       } catch (err) {
         failed++;
         log('❌ 第 ' + (i + 1) + ' 条异常: ' + err.message);
-        send('progress', {
-          status: 'running',
-          current: i + 1, total: limit, success: success, failed: failed,
-          message: '第 ' + (i + 1) + ' 条采集失败: ' + err.message,
-        });
-
         try { await goBackToListAndWait(); } catch (e) { /* ignore */ }
         await randomDelay(2000, 4000);
       }
     }
 
-    send('progress', {
-      status: 'completed',
-      current: limit, total: limit, success: success, failed: failed,
-      message: '采集完成！成功 ' + success + ' 条，失败 ' + failed + ' 条',
-    });
-
+    send('progress', { status: 'completed', current: limit, total: limit, success: success, failed: failed, message: '采集完成！成功 ' + success + ' 条，失败 ' + failed + ' 条' });
     log('采集完成: ' + success + ' 成功, ' + failed + ' 失败');
     isRunning = false;
   }
@@ -980,43 +960,64 @@
     log('收到停止指令');
   }
 
-  // === 全局诊断工具 ===
-  // 通过 script 标签注入到页面的 MAIN world，用户在 F12 控制台可直接调用
-  // 用法：在 Google Maps 点击某个商家打开详情面板后，F12 控制台输入 diagMaps() 回车
+  // =====================================================
+  // 诊断函数（F12 可用）
+  // =====================================================
   try {
     var diagCode = [
       'window.diagMaps=function(){',
-      'console.log("========== Google Maps 诊断报告 ==========");',
-      'var main=document.querySelector("div[role=\\"main\\"]");',
-      'var feed=document.querySelector("div[role=\\"feed\\"]");',
-      'console.log("[基本信息]");',
-      'console.log("  role=main: "+(main?"YES":"NO"));',
-      'console.log("  role=feed: "+(feed?"YES":"NO"));',
-      'console.log("  URL: "+location.href);',
-      'console.log("  lang: "+document.documentElement.lang);',
-      'var container=main||document.body;',
-      'console.log("\\n[详情面板 - 所有 h1 元素]");',
-      'var h1s=container.querySelectorAll("h1");',
-      'for(var i=0;i<h1s.length;i++){var h=h1s[i];console.log("  h1["+i+"]: text=\\""+h.textContent.trim().substring(0,80)+"\\" class=\\""+h.className+"\\"");}',
-      'console.log("\\n[详情面板 - 所有 h2 元素]");',
-      'var h2s=container.querySelectorAll("h2");',
-      'for(var i2=0;i2<h2s.length;i2++){var h2=h2s[i2];console.log("  h2["+i2+"]: text=\\""+h2.textContent.trim().substring(0,80)+"\\" class=\\""+h2.className+"\\"");}',
-      'console.log("\\n[详情面板 - aria-label 元素（<200字符）]");',
-      'var allAria=container.querySelectorAll("[aria-label]");',
-      'var c=0;for(var j=0;j<allAria.length;j++){var el=allAria[j];var lb=el.getAttribute("aria-label")||"";if(!lb||lb.length===0||lb.length>200)continue;c++;var info="  ["+c+"] <"+el.tagName+">";info+=" aria=\\""+lb+"\\"";var did=el.getAttribute("data-item-id")||"";if(did)info+=" data-item-id=\\""+did+"\\"";var cls=el.className;if(cls&&typeof cls==="string")info+=" class=\\""+cls.substring(0,40)+"\\"";var txt=el.textContent.trim();if(txt)info+=" text=\\""+txt.substring(0,50)+"\\"";console.log(info);}',
-      'console.log("\\n[详情面板 - data-item-id 按钮/链接]");',
-      'var itemEls=container.querySelectorAll("[data-item-id]");',
-      'var ic=0;for(var k=0;k<itemEls.length;k++){var ie=itemEls[k];if(ie.tagName!=="BUTTON"&&ie.tagName!=="A")continue;ic++;var iInfo="  ["+ic+"] <"+ie.tagName+">";iInfo+=" data-item-id=\\""+ie.getAttribute("data-item-id")+"\\"";var iA=ie.getAttribute("aria-label")||"";if(iA)iInfo+=" aria=\\""+iA+"\\"";iInfo+=" text=\\""+ie.textContent.trim().substring(0,50)+"\\"";console.log(iInfo);}',
-      'console.log("\\n[详情面板 - data-tooltip 按钮/链接]");',
-      'var tipEls=container.querySelectorAll("[data-tooltip]");',
-      'for(var t=0;t<tipEls.length;t++){var te=tipEls[t];if(te.tagName!=="BUTTON"&&te.tagName!=="A")continue;var tInfo="  <"+te.tagName+">";tInfo+=" data-tooltip=\\""+te.getAttribute("data-tooltip")+"\\"";var tA=te.getAttribute("aria-label")||"";if(tA)tInfo+=" aria=\\""+tA+"\\"";console.log(tInfo);}',
-      'var cards=document.querySelectorAll("div.Nv2PK");',
-      'console.log("\\n[搜索结果]");',
-      'console.log("  div.Nv2PK 卡片数: "+cards.length);',
-      'console.log("\\n========== 诊断结束 ==========");',
-      'console.log("请把以上全部内容截图发给我，我来针对性修复。");',
+      '  console.log("========== Google Maps 诊断报告 ==========");',
+      '  console.log("URL: "+location.href);',
+      '  console.log("lang: "+document.documentElement.lang);',
+      '  var main=document.querySelector("div[role=\\"main\\"]");',
+      '  var feed=document.querySelector("div[role=\\"feed\\"]");',
+      '  var dialog=document.querySelector("div[role=\\"dialog\\"]");',
+      '  var modal=document.querySelector("[aria-modal=\\"true\\"]");',
+      '  console.log("role=main: "+(main?"YES (h="+main.offsetHeight+")":"NO"));',
+      '  console.log("role=feed: "+(feed?"YES":"NO"));',
+      '  console.log("role=dialog: "+(dialog?"YES (h="+dialog.offsetHeight+")":"NO"));',
+      '  console.log("aria-modal: "+(modal?"YES (h="+modal.offsetHeight+")":"NO"));',
+      '',
+      '  var scope=dialog||modal||main||document.body;',
+      '  console.log("\\n--- h1 元素 ("+scope.querySelectorAll("h1").length+" 个) ---");',
+      '  var h1s=scope.querySelectorAll("h1");',
+      '  for(var i=0;i<h1s.length;i++){',
+      '    console.log("  h1["+i+"]: \\""+h1s[i].textContent.trim().substring(0,80)+"\\" class=\\""+h1s[i].className+"\\"");',
+      '  }',
+      '',
+      '  console.log("\\n--- h2 元素 ("+scope.querySelectorAll("h2").length+" 个) ---");',
+      '  var h2s=scope.querySelectorAll("h2");',
+      '  for(var j=0;j<h2s.length;j++){',
+      '    console.log("  h2["+j+"]: \\""+h2s[j].textContent.trim().substring(0,80)+"\\"");',
+      '  }',
+      '',
+      '  console.log("\\n--- aria-label 元素 (前30个) ---");',
+      '  var allAria=scope.querySelectorAll("[aria-label]");',
+      '  var c=0;',
+      '  for(var k=0;k<allAria.length&&c<30;k++){',
+      '    var el=allAria[k];',
+      '    var lb=el.getAttribute("aria-label")||"";',
+      '    if(!lb)continue;',
+      '    c++;',
+      '    var info="  <"+el.tagName+"> aria=\\""+lb+"\\"";',
+      '    var did=el.getAttribute("data-item-id")||"";',
+      '    if(did)info+=" data-item-id=\\""+did+"\\"";',
+      '    console.log(info);',
+      '  }',
+      '',
+      '  console.log("\\n--- data-item-id 按钮/链接 ---");',
+      '  var itemEls=scope.querySelectorAll("[data-item-id]");',
+      '  for(var m=0;m<itemEls.length;m++){',
+      '    var ie=itemEls[m];',
+      '    if(ie.tagName!=="BUTTON"&&ie.tagName!=="A")continue;',
+      '    console.log("  <"+ie.tagName+"> data-item-id=\\""+ie.getAttribute("data-item-id")+"\\" text=\\""+ie.textContent.trim().substring(0,50)+"\\"");',
+      '  }',
+      '',
+      '  console.log("\\n--- 搜索结果卡片 ---");',
+      '  console.log("div.Nv2PK: "+document.querySelectorAll("div.Nv2PK").length+" 个");',
+      '  console.log("\\n========== 诊断结束 ==========");',
       '};',
-      'console.log("[Maps Scraper] 诊断函数已就绪，输入 diagMaps() 使用");'
+      'console.log("[Maps Scraper v5] 诊断函数就绪，F12 输入 diagMaps() 使用");'
     ].join('\n');
     var diagScript = document.createElement('script');
     diagScript.textContent = diagCode;
@@ -1026,11 +1027,13 @@
     log('注入诊断函数失败: ' + e.message);
   }
 
-  // === 消息监听 ===
+  // =====================================================
+  // 消息监听
+  // =====================================================
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     switch (msg.type) {
       case 'start':
-        log('收到采集指令, 目标数量: ' + (msg.maxResults || 50));
+        log('收到采集指令, 目标: ' + (msg.maxResults || 50));
         startScraper(msg.maxResults || 50);
         sendResponse({ ok: true });
         break;
@@ -1046,19 +1049,16 @@
         sendResponse({ alive: true });
         break;
       case 'test':
-        // 调试测试：返回当前页面选择器匹配情况
-        const testResult = {
-          panel: !!document.querySelector(SEL.results.panel),
-          cards: document.querySelectorAll(SEL.results.card).length,
-          cardsFallback: document.querySelectorAll(SEL.results.cardFallback).length,
-        };
-        sendResponse(testResult);
+        sendResponse({
+          panel: !!document.querySelector('div[role="feed"]'),
+          cards: document.querySelectorAll('div.Nv2PK').length,
+          detailContainer: !!findDetailContainer(),
+        });
         break;
     }
-    return true; // 保持异步通道
+    return true;
   });
 
-  // 通知 background/content script 已就绪
   chrome.runtime.sendMessage({ type: 'contentReady' }).catch(() => {});
-  log('已就绪，等待指令...');
+  log('v5 已就绪，等待指令...');
 })();
