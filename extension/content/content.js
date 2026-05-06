@@ -41,7 +41,8 @@
         'div[role="main"] h1',
         'h1.lANesb',
         'div[class*="PIoX8"] h1',
-        '.SIpiFc h1'
+        '.SIpiFc h1',
+        'h1'  // 最终 fallback：任意 h1
       ],
       // 评分
       rating: 'div.F7nice > span:first-child',
@@ -237,14 +238,14 @@
     let nameEl = findFirst([SEL.detail.name, ...SEL.detail.nameFallback]);
     const name = nameEl ? nameEl.textContent.trim() : '';
 
-    log(`extractDetail: name="${name}"`);
+    log('extractDetail: name="' + name + '"');
 
     if (!name) {
       log('extractDetail: 无商家名称，跳过');
       const allH1 = document.querySelectorAll('h1');
-      log(`extractDetail: 页面有 ${allH1.length} 个 h1 元素`);
-      allH1.forEach((h, i) => {
-        log(`  h1[${i}]: class="${h.className}", text="${h.textContent.trim().substring(0, 50)}"`);
+      log('extractDetail: 页面有 ' + allH1.length + ' 个 h1 元素');
+      allH1.forEach(function(h, i) {
+        log('  h1[' + i + ']: class="' + h.className + '", text="' + h.textContent.trim().substring(0, 50) + '"');
       });
       return null;
     }
@@ -263,7 +264,7 @@
     const reviewEl = findFirst([SEL.detail.reviewCount, ...SEL.detail.reviewCountFallback]);
     if (reviewEl) {
       // 从 aria-label 获取（优先）
-      const aria = reviewEl.getAttribute('aria-label') || reviewEl.parentElement?.getAttribute('aria-label') || '';
+      const aria = reviewEl.getAttribute('aria-label') || (reviewEl.parentElement ? reviewEl.parentElement.getAttribute('aria-label') : '') || '';
       const m = aria.match(/(\d[\d,]*)\s*review/i);
       if (m) {
         reviews = m[1].replace(/,/g, '');
@@ -306,9 +307,9 @@
       website = websiteEl.href;
     }
 
-    log(`extractDetail: 完整数据 → name="${name}", rating="${rating}", reviews="${reviews}", address="${address.substring(0, 40)}", phone="${phone}", website="${website ? 'yes' : 'no'}"`);
+    log('extractDetail: 完整数据 -> name="' + name + '", rating="' + rating + '", reviews="' + reviews + '", address="' + address.substring(0, 40) + '", phone="' + phone + '", website="' + (website ? 'yes' : 'no') + '"');
 
-    return { name, rating, reviews, address, phone, website };
+    return { name: name, rating: rating, reviews: reviews, address: address, phone: phone, website: website };
   }
 
   function hasCaptcha() {
@@ -398,76 +399,57 @@
   }
 
   /**
-   * 等待详情面板数据加载完成（修复版 - 不会提前 resolve）
-   * 改进：增加多次验证，确保DOM已稳定
+   * 等待详情面板数据加载完成
+   * 正确处理：使用 findFirst 检查所有 name 选择器（主选择器 + 所有 fallback）
    */
-  function waitForDetail(timeout = 12000) {
+  function waitForDetail(timeout = 15000) {
     return new Promise((resolve) => {
       let resolved = false;
-      const nameSel = SEL.detail.name;
-      const nameFallback = SEL.detail.nameFallback;
 
-      // 验证函数：检查详情面板是否有有效数据
-      const verifyDetail = () => {
-        const el = document.querySelector(nameSel);
-        if (!el) return false;
-        
+      // 检查详情面板是否已加载（尝试 ALL name 选择器）
+      const checkDetail = () => {
+        const el = findFirst([SEL.detail.name, ...SEL.detail.nameFallback]);
+        if (!el) return null;
         const text = el.textContent.trim();
-        if (text.length === 0) return false;
-        
-        // 额外检查：确保不是 "Google Maps" 或空占位符
-        if (text === 'Google Maps' || text === '地图') return false;
-        
-        return true;
+        if (text.length === 0) return null;
+        if (text === 'Google Maps' || text === '地图') return null;
+        return text; // 返回名称文本
       };
 
-      const check = () => {
-        return verifyDetail();
-      };
-
-      // 先立即检查一次
-      if (check()) {
-        log('waitForDetail: 详情已就绪（即时）');
-        // 额外等待500ms让DOM完全稳定
-        setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            resolve(true);
-          }
-        }, 500);
+      // 立即检查一次
+      const immediate = checkDetail();
+      if (immediate) {
+        log(`waitForDetail: 详情已就绪（即时）, name="${immediate}"`);
+        resolved = true;
+        resolve(true);
         return;
       }
 
-      // 轮询检查
+      // 轮询 + 稳定性检查
       let elapsed = 0;
-      const interval = 400;
+      const interval = 500;
       let stableCount = 0;
       let lastName = '';
-      
+
       const timer = setInterval(() => {
         elapsed += interval;
+        if (resolved) { clearInterval(timer); return; }
 
-        if (resolved) return; // 已解决，不再检查
-
-        if (check()) {
-          // 验证名称是否稳定（防止首次渲染后还需更新）
-          const el = document.querySelector(nameSel);
-          const currentName = el ? el.textContent.trim() : '';
-          
-          if (currentName === lastName && currentName.length > 0) {
+        const currentName = checkDetail();
+        if (currentName) {
+          if (currentName === lastName && lastName.length > 0) {
             stableCount++;
           } else {
             stableCount = 0;
             lastName = currentName;
           }
-          
-          // 名称稳定500ms后才认为加载完成
+
+          // 名称稳定 ~1s 后认为加载完成
           if (stableCount >= 2) {
             resolved = true;
             clearInterval(timer);
             log(`waitForDetail: 详情已就绪 (${elapsed}ms), name="${currentName}"`);
             resolve(true);
-            return;
           }
         } else {
           stableCount = 0;
@@ -478,6 +460,12 @@
           resolved = true;
           clearInterval(timer);
           log(`waitForDetail: 等待超时 (${timeout}ms)`);
+          // 调试：输出当前页面所有 h1 信息
+          const allH1 = document.querySelectorAll('h1');
+          log(`  debug: 页面有 ${allH1.length} 个 h1`);
+          allH1.forEach((h, i) => {
+            log(`  h1[${i}]: class="${h.className}", text="${h.textContent.trim().substring(0, 30)}"`);
+          });
           resolve(false);
         }
       }, interval);
