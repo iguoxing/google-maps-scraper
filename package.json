@@ -1,0 +1,19 @@
+{
+  "name": "google-maps-scraper",
+  "version": "1.0.0",
+  "description": "Google Maps 数据采集工具 - 批量采集商家信息",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "concurrently \"node server.js\""
+  },
+  "dependencies": {
+    "express": "^5.2.0",
+    "playwright": "^1.55.1",
+    "xlsx": "latest",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

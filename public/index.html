@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Maps 数据采集工具</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    body { background: #0f172a; min-height: 100vh; }
+
+    .glass-card {
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .gradient-text {
+      background: linear-gradient(135deg, #60a5fa, #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .pulse-dot {
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .progress-bar {
+      background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+      transition: width 0.5s ease;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      transition: all 0.2s;
+    }
+    .btn-primary:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 20px rgba(59, 130, 246, 0.4);
+    }
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-danger {
+      background: linear-gradient(135deg, #ef4444, #f97316);
+      transition: all 0.2s;
+    }
+    .btn-danger:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 20px rgba(239, 68, 68, 0.4);
+    }
+
+    .btn-export {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      transition: all 0.2s;
+    }
+    .btn-export:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+
+    .table-container::-webkit-scrollbar {
+      height: 6px;
+    }
+    .table-container::-webkit-scrollbar-track {
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 3px;
+    }
+    .table-container::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 3px;
+    }
+    .table-container::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+
+    table th {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: #1e293b;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 500;
+    }
+
+    .fade-in {
+      animation: fadeIn 0.3s ease;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .toast {
+      animation: slideIn 0.3s ease, fadeOut 0.3s ease 2.7s;
+    }
+    @keyframes slideIn {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    @keyframes fadeOut {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+
+    input:focus {
+      outline: none;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+    }
+  </style>
+</head>
+<body class="text-gray-200">
+
+  <!-- Toast 容器 -->
+  <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2"></div>
+
+  <div class="max-w-7xl mx-auto px-4 py-8">
+
+    <!-- Header -->
+    <header class="text-center mb-8">
+      <div class="inline-flex items-center gap-3 mb-3">
+        <svg class="w-10 h-10 text-blue-400" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+        </svg>
+        <h1 class="text-3xl font-bold gradient-text">Google Maps 数据采集工具</h1>
+      </div>
+      <p class="text-gray-400 text-sm">批量采集商家信息 · 导出 CSV / Excel</p>
+    </header>
+
+    <!-- 搜索表单 -->
+    <section class="glass-card rounded-2xl p-6 mb-6">
+      <form id="search-form" class="flex flex-wrap gap-4 items-end">
+        <div class="flex-1 min-w-[200px]">
+          <label class="block text-sm font-medium text-gray-400 mb-1.5">搜索关键词 <span class="text-red-400">*</span></label>
+          <input type="text" id="keyword" placeholder="如：餐厅、律师、牙科诊所"
+            class="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-gray-200 placeholder-gray-500 transition-all"
+            required>
+        </div>
+        <div class="flex-1 min-w-[150px]">
+          <label class="block text-sm font-medium text-gray-400 mb-1.5">城市/地区</label>
+          <input type="text" id="city" placeholder="如：北京、上海浦东"
+            class="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-gray-200 placeholder-gray-500 transition-all">
+        </div>
+        <div class="w-36">
+          <label class="block text-sm font-medium text-gray-400 mb-1.5">采集数量</label>
+          <input type="number" id="max-results" value="50" min="1" max="500"
+            class="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-gray-200 transition-all">
+        </div>
+        <div class="flex gap-2">
+          <button type="submit" id="btn-start" class="btn-primary text-white font-medium px-6 py-2.5 rounded-lg">
+            开始采集
+          </button>
+          <button type="button" id="btn-stop" class="btn-danger text-white font-medium px-4 py-2.5 rounded-lg hidden">
+            停止
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 进度面板 -->
+    <section id="progress-section" class="glass-card rounded-2xl p-6 mb-6 hidden fade-in">
+      <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-3">
+          <div id="status-indicator" class="w-3 h-3 rounded-full bg-gray-500"></div>
+          <span id="status-text" class="font-medium">就绪</span>
+        </div>
+        <div class="flex items-center gap-6 text-sm text-gray-400">
+          <span>进度: <span id="progress-count" class="text-gray-200 font-medium">0</span> / <span id="progress-total">0</span></span>
+          <span class="text-green-400">成功: <span id="success-count" class="font-medium">0</span></span>
+          <span class="text-red-400">失败: <span id="failed-count" class="font-medium">0</span></span>
+        </div>
+      </div>
+
+      <!-- 进度条 -->
+      <div class="w-full h-2 bg-white/5 rounded-full overflow-hidden mb-3">
+        <div id="progress-bar" class="progress-bar h-full rounded-full" style="width: 0%"></div>
+      </div>
+
+      <p id="progress-message" class="text-sm text-gray-400">等待开始...</p>
+    </section>
+
+    <!-- 数据表格 -->
+    <section class="glass-card rounded-2xl overflow-hidden mb-6">
+      <div class="flex items-center justify-between p-4 border-b border-white/10">
+        <div class="flex items-center gap-3">
+          <h2 class="font-semibold text-lg">采集数据</h2>
+          <span id="data-count" class="text-sm text-gray-400">共 0 条</span>
+        </div>
+        <div class="flex gap-2">
+          <button id="btn-export-csv" class="btn-export text-gray-300 text-sm px-4 py-2 rounded-lg flex items-center gap-2" disabled>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            导出 CSV
+          </button>
+          <button id="btn-export-excel" class="btn-export text-gray-300 text-sm px-4 py-2 rounded-lg flex items-center gap-2" disabled>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+            导出 Excel
+          </button>
+          <button id="btn-clear" class="btn-export text-gray-400 text-sm px-3 py-2 rounded-lg" title="清除数据">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="table-container overflow-auto max-h-[500px]">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-gray-400 text-xs uppercase tracking-wider">
+              <th class="px-4 py-3 w-10">#</th>
+              <th class="px-4 py-3">商家名称</th>
+              <th class="px-4 py-3">地址</th>
+              <th class="px-4 py-3">电话</th>
+              <th class="px-4 py-3 w-16">评分</th>
+              <th class="px-4 py-3 w-20">评论数</th>
+              <th class="px-4 py-3">网站链接</th>
+            </tr>
+          </thead>
+          <tbody id="data-table-body" class="divide-y divide-white/5">
+            <tr id="empty-row">
+              <td colspan="7" class="px-4 py-12 text-center text-gray-500">
+                <svg class="w-12 h-12 mx-auto mb-3 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
+                暂无数据，输入关键词开始采集
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 使用说明 -->
+    <section class="glass-card rounded-2xl p-6">
+      <h2 class="font-semibold text-lg mb-3 flex items-center gap-2">
+        <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        使用说明
+      </h2>
+      <div class="grid md:grid-cols-3 gap-4 text-sm text-gray-400">
+        <div class="bg-white/5 rounded-lg p-4">
+          <div class="text-blue-400 font-medium mb-1">1. 输入搜索条件</div>
+          <p>填写关键词（如"咖啡厅"）和可选的城市/地区，设置采集数量。</p>
+        </div>
+        <div class="bg-white/5 rounded-lg p-4">
+          <div class="text-purple-400 font-medium mb-1">2. 开始采集</div>
+          <p>点击"开始采集"，系统会自动打开 Chrome 浏览器操作 Google Maps。如遇验证码请在浏览器中手动完成。</p>
+        </div>
+        <div class="bg-white/5 rounded-lg p-4">
+          <div class="text-green-400 font-medium mb-1">3. 导出数据</div>
+          <p>采集完成后可预览数据，点击导出按钮下载 CSV 或 Excel 文件。</p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <script>
+    // DOM 元素
+    const form = document.getElementById('search-form');
+    const btnStart = document.getElementById('btn-start');
+    const btnStop = document.getElementById('btn-stop');
+    const btnExportCSV = document.getElementById('btn-export-csv');
+    const btnExportExcel = document.getElementById('btn-export-excel');
+    const btnClear = document.getElementById('btn-clear');
+    const progressSection = document.getElementById('progress-section');
+    const statusIndicator = document.getElementById('status-indicator');
+    const statusText = document.getElementById('status-text');
+    const progressBar = document.getElementById('progress-bar');
+    const progressCount = document.getElementById('progress-count');
+    const progressTotal = document.getElementById('progress-total');
+    const successCount = document.getElementById('success-count');
+    const failedCount = document.getElementById('failed-count');
+    const progressMessage = document.getElementById('progress-message');
+    const dataCount = document.getElementById('data-count');
+    const tableBody = document.getElementById('data-table-body');
+
+    let collectedData = [];
+
+    // Toast 通知
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      const colors = {
+        info: 'bg-blue-500/90',
+        success: 'bg-green-500/90',
+        error: 'bg-red-500/90',
+        warning: 'bg-yellow-500/90',
+      };
+      const toast = document.createElement('div');
+      toast.className = `toast ${colors[type]} text-white px-4 py-3 rounded-lg shadow-lg text-sm backdrop-blur-sm`;
+      toast.textContent = message;
+      container.appendChild(toast);
+      setTimeout(() => toast.remove(), 3000);
+    }
+
+    // 更新进度 UI
+    function updateProgressUI(progress) {
+      progressSection.classList.remove('hidden');
+
+      const statusConfig = {
+        idle: { color: 'bg-gray-500', text: '就绪' },
+        running: { color: 'bg-blue-500 pulse-dot', text: '采集中...' },
+        paused: { color: 'bg-yellow-500', text: '已暂停' },
+        completed: { color: 'bg-green-500', text: '已完成' },
+        error: { color: 'bg-red-500', text: '出错' },
+      };
+
+      const config = statusConfig[progress.status] || statusConfig.idle;
+      statusIndicator.className = `w-3 h-3 rounded-full ${config.color}`;
+      statusText.textContent = config.text;
+
+      progressCount.textContent = progress.current;
+      progressTotal.textContent = progress.total;
+      successCount.textContent = progress.success;
+      failedCount.textContent = progress.failed;
+      progressMessage.textContent = progress.message;
+
+      const pct = progress.total > 0 ? (progress.current / progress.total * 100) : 0;
+      progressBar.style.width = `${pct}%`;
+
+      // 按钮状态
+      const isRunning = progress.status === 'running';
+      btnStart.disabled = isRunning;
+      btnStart.classList.toggle('hidden', isRunning);
+      btnStop.classList.toggle('hidden', !isRunning);
+    }
+
+    // 更新数据表格
+    function updateTable(data) {
+      collectedData = data;
+      dataCount.textContent = `共 ${data.length} 条`;
+
+      const hasData = data.length > 0;
+      btnExportCSV.disabled = !hasData;
+      btnExportExcel.disabled = !hasData;
+
+      if (!hasData) {
+        tableBody.innerHTML = `
+          <tr id="empty-row">
+            <td colspan="7" class="px-4 py-12 text-center text-gray-500">
+              <svg class="w-12 h-12 mx-auto mb-3 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
+              暂无数据，输入关键词开始采集
+            </td>
+          </tr>`;
+        return;
+      }
+
+      tableBody.innerHTML = data.map((row, i) => `
+        <tr class="hover:bg-white/5 transition-colors">
+          <td class="px-4 py-3 text-gray-500">${i + 1}</td>
+          <td class="px-4 py-3 font-medium text-gray-200">${escapeHtml(row.name || '')}</td>
+          <td class="px-4 py-3 text-gray-400 max-w-[250px] truncate" title="${escapeHtml(row.address || '')}">${escapeHtml(row.address || '-')}</td>
+          <td class="px-4 py-3 text-gray-400">${escapeHtml(row.phone || '-')}</td>
+          <td class="px-4 py-3">
+            ${row.rating ? `<span class="text-yellow-400 font-medium">${row.rating}</span>` : '<span class="text-gray-600">-</span>'}
+          </td>
+          <td class="px-4 py-3 text-gray-400">${row.reviews || '0'}</td>
+          <td class="px-4 py-3 max-w-[200px] truncate">
+            ${row.website ? `<a href="${escapeHtml(row.website)}" target="_blank" class="text-blue-400 hover:text-blue-300 transition-colors">${escapeHtml(new URL(row.website).hostname)}</a>` : '<span class="text-gray-600">-</span>'}
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // SSE 连接
+    function connectSSE() {
+      const evtSource = new EventSource('/api/progress');
+
+      evtSource.addEventListener('progress', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          updateProgressUI(data);
+          if (data.data && data.data.length >= 0) {
+            updateTable(data.data);
+          }
+        } catch (err) {
+          console.error('SSE 解析错误:', err);
+        }
+      });
+
+      evtSource.onerror = () => {
+        // 3秒后重连
+        setTimeout(connectSSE, 3000);
+        evtSource.close();
+      };
+    }
+
+    // 表单提交 - 启动采集
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const keyword = document.getElementById('keyword').value.trim();
+      const city = document.getElementById('city').value.trim();
+      const maxResults = document.getElementById('max-results').value;
+
+      if (!keyword) {
+        showToast('请输入搜索关键词', 'warning');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keyword, city, maxResults: parseInt(maxResults) }),
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          showToast('采集任务已启动，浏览器窗口即将打开', 'success');
+          progressSection.classList.remove('hidden');
+        } else {
+          showToast(data.error || '启动失败', 'error');
+        }
+      } catch (err) {
+        showToast('网络错误: ' + err.message, 'error');
+      }
+    });
+
+    // 停止采集
+    btnStop.addEventListener('click', async () => {
+      try {
+        await fetch('/api/stop', { method: 'POST' });
+        showToast('正在停止采集...', 'info');
+      } catch (err) {
+        showToast('停止失败: ' + err.message, 'error');
+      }
+    });
+
+    // 导出 CSV
+    btnExportCSV.addEventListener('click', () => {
+      window.open('/api/export/csv', '_blank');
+      showToast('CSV 文件已开始下载', 'success');
+    });
+
+    // 导出 Excel
+    btnExportExcel.addEventListener('click', () => {
+      window.open('/api/export/excel', '_blank');
+      showToast('Excel 文件已开始下载', 'success');
+    });
+
+    // 清除数据
+    btnClear.addEventListener('click', async () => {
+      try {
+        await fetch('/api/clear', { method: 'POST' });
+        collectedData = [];
+        updateTable([]);
+        updateProgressUI({ status: 'idle', current: 0, total: 0, success: 0, failed: 0, message: '' });
+        progressSection.classList.add('hidden');
+        showToast('数据已清除', 'info');
+      } catch (err) {
+        showToast('清除失败: ' + err.message, 'error');
+      }
+    });
+
+    // 初始化
+    connectSSE();
+  </script>
+</body>
+</html>
