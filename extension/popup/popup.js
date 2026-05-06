@@ -202,7 +202,7 @@ $('btnOpenPanel').addEventListener('click', async () => {
 // 导出 CSV
 $('btnExportCSV').addEventListener('click', async () => {
   const res = await chrome.storage.local.get(['scraper_data']);
-  const data = res.scraper_data || [];
+  const data = (res.scraper_data || []).filter(Boolean);
   if (data.length === 0) return;
 
   const BOM = '\uFEFF';
@@ -229,7 +229,7 @@ $('btnExportCSV').addEventListener('click', async () => {
 // 导出 Excel（加载 SheetJS）
 $('btnExportExcel').addEventListener('click', async () => {
   const res = await chrome.storage.local.get(['scraper_data']);
-  const data = res.scraper_data || [];
+  const data = (res.scraper_data || []).filter(Boolean);
   if (data.length === 0) return;
 
   // 加载 SheetJS

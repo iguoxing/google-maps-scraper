@@ -236,13 +236,20 @@
     return !!document.querySelector(SEL.page.captcha);
   }
 
-  function goBackToList() {
+  /**
+   * 返回列表视图并等待列表恢复
+   */
+  async function goBackToListAndWait(timeout = 8000) {
     const backBtn = q(SEL.page.closeDetail, SEL.page.closeDetailFallback);
-    if (backBtn) {
-      backBtn.click();
+    if (!backBtn) {
+      log('goBackToList: 未找到返回按钮，可能已经在列表视图');
       return true;
     }
-    return false;
+    backBtn.click();
+    log('goBackToList: 已点击返回，等待列表恢复...');
+
+    // 等待搜索结果面板重新出现（说明已返回列表视图）
+    return waitForResultsPanel(timeout);
   }
 
   /**
@@ -500,10 +507,14 @@
         }
 
         if (!detailReady) {
-          log(`第 ${i + 1} 条: 详情加载超时，尝试提取...`);
+          log(`第 ${i + 1} 条: 详情加载超时，跳过本条`);
+          failed++;
+          await goBackToListAndWait();
+          await randomDelay(2000, 3000);
+          continue;
         }
 
-        // 提取数据
+        // 提取数据（仅在详情正确加载后）
         const data = extractDetail();
         if (data && data.name) {
           send('data', { item: data, index: i });
@@ -520,9 +531,9 @@
           message: `已采集 ${success} 条，失败 ${failed} 条`,
         });
 
-        // 返回列表
-        goBackToList();
-        await randomDelay(1500, 3000);
+        // 返回列表并等待列表恢复
+        await goBackToListAndWait();
+        await randomDelay(1000, 2000);
 
       } catch (err) {
         failed++;
@@ -533,7 +544,7 @@
           message: `第 ${i + 1} 条采集失败: ${err.message}`,
         });
 
-        try { goBackToList(); } catch (e) { /* ignore */ }
+        try { await goBackToListAndWait(); } catch (e) { /* ignore */ }
         await randomDelay(2000, 4000);
       }
     }

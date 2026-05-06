@@ -12,6 +12,40 @@ let state = {
   message: '',
 };
 
+// ========== 数据存储（带互斥锁，防止读写竞态）==========
+let dataCache = null;       // 内存缓存，避免反复读磁盘
+let dataCacheReady = false;
+const dataLock = { locked: false, queue: [] }; // 简单互斥锁
+
+function acquireLock() {
+  return new Promise(resolve => {
+    if (!dataLock.locked) {
+      dataLock.locked = true;
+      resolve();
+    } else {
+      dataLock.queue.push(resolve);
+    }
+  });
+}
+
+function releaseLock() {
+  if (dataLock.queue.length > 0) {
+    const next = dataLock.queue.shift();
+    next();
+  } else {
+    dataLock.locked = false;
+  }
+}
+
+// 初始化：启动时从 storage 恢复缓存
+chrome.storage.local.get(['scraper_data']).then(result => {
+  dataCache = result.scraper_data || [];
+  dataCacheReady = true;
+  console.log(`[SW] 数据缓存已加载，${dataCache.length} 条`);
+});
+
+// ============================================================
+
 // 监听来自 content script 的消息，转发给 popup/sidepanel
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.type) {
@@ -22,10 +56,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case 'data':
-      // 保存数据到 storage
-      saveData(msg.item, msg.index);
-      broadcastToPopup({ type: 'data', item: msg.item, index: msg.index });
-      break;
+      // 保存数据到 storage（加锁，防止竞态）
+      handleData(msg.item, msg.index).then(() => {
+        broadcastToPopup({ type: 'data', item: msg.item, index: msg.index });
+      });
+      // 异步处理，不阻塞
+      return false;
 
     case 'captcha':
       state.status = 'captcha';
@@ -35,7 +71,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case 'start':
-      // Forward to content script in active tab
       forwardToContent(msg);
       sendResponse({ ok: true });
       break;
@@ -50,7 +85,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case 'getData':
-      getAllData().then(data => sendResponse({ data }));
+      getData().then(data => sendResponse({ data }));
       return true; // async response
 
     case 'clearData':
@@ -63,6 +98,56 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true; // async response
   }
 });
+
+/**
+ * 处理数据保存（加锁防止竞态写入）
+ */
+async function handleData(item, index) {
+  await acquireLock();
+  try {
+    // 确保缓存已加载
+    if (!dataCacheReady) {
+      const result = await chrome.storage.local.get(['scraper_data']);
+      dataCache = result.scraper_data || [];
+      dataCacheReady = true;
+    }
+
+    // 按 index 存储/覆盖（不依赖 name+address 去重）
+    // 补齐数组长度（用 null 占位）
+    while (dataCache.length <= index) {
+      dataCache.push(null);
+    }
+    dataCache[index] = item;
+
+    // 持久化
+    await chrome.storage.local.set({ scraper_data: dataCache });
+    console.log(`[SW] 已保存 index=${index}, name=${item.name}, 总计=${dataCache.filter(Boolean).length} 条有效`);
+  } finally {
+    releaseLock();
+  }
+}
+
+/**
+ * 获取所有数据（过滤掉 null 占位符）
+ */
+async function getData() {
+  if (!dataCacheReady) {
+    const result = await chrome.storage.local.get(['scraper_data']);
+    dataCache = result.scraper_data || [];
+    dataCacheReady = true;
+  }
+  // 过滤掉 null（indexOf 占位的空槽）
+  return dataCache.filter(Boolean);
+}
+
+/**
+ * 清除数据
+ */
+async function clearData() {
+  dataCache = [];
+  dataCacheReady = true;
+  await chrome.storage.local.remove(['scraper_data']);
+}
 
 /**
  * 转发消息到当前活跃 tab 的 content script
@@ -88,45 +173,8 @@ function broadcastToPopup(msg) {
 }
 
 /**
- * 保存一条数据
- */
-async function saveData(item, index) {
-  const result = await chrome.storage.local.get(['scraper_data']);
-  const data = result.scraper_data || [];
-  // 避免重复（按 index 检查）
-  if (!data.find(d => d.name === item.name && d.address === item.address)) {
-    data.push(item);
-    await chrome.storage.local.set({ scraper_data: data });
-  }
-}
-
-/**
- * 获取所有数据
- */
-async function getAllData() {
-  const result = await chrome.storage.local.get(['scraper_data']);
-  return result.scraper_data || [];
-}
-
-/**
- * 清除数据
- */
-async function clearData() {
-  await chrome.storage.local.remove(['scraper_data']);
-}
-
-/**
  * 保存状态
  */
 async function saveState() {
   await chrome.storage.local.set({ scraper_state: state });
 }
-
-/**
- * 启动时恢复状态
- */
-chrome.storage.local.get(['scraper_state']).then(result => {
-  if (result.scraper_state) {
-    state = result.scraper_state;
-  }
-});

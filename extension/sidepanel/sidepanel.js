@@ -44,10 +44,11 @@ function renderTable(data) {
   }).join('');
 }
 
-// 加载数据
+// 加载数据（过滤掉 null 占位符）
 function loadData() {
   chrome.storage.local.get(['scraper_data'], (result) => {
-    renderTable(result.scraper_data || []);
+    const data = (result.scraper_data || []).filter(Boolean);
+    renderTable(data);
   });
 }
 
