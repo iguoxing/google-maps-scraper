@@ -980,6 +980,81 @@
     log('收到停止指令');
   }
 
+  // === 全局诊断工具 ===
+  // 暴露到 window，用户可以在 F12 控制台直接调用
+  // 用法：在 Google Maps 点击某个商家打开详情面板后，F12 控制台输入 diagMaps() 回车
+  window.diagMaps = function () {
+    console.log('========== Google Maps 诊断报告 ==========');
+
+    // 1. 基本信息
+    var main = document.querySelector('div[role="main"]');
+    var feed = document.querySelector('div[role="feed"]');
+    console.log('[基本信息]');
+    console.log('  role=main: ' + (main ? 'YES' : 'NO'));
+    console.log('  role=feed: ' + (feed ? 'YES' : 'NO'));
+    console.log('  URL: ' + location.href);
+    console.log('  lang: ' + document.documentElement.lang);
+
+    // 2. 详情面板容器
+    var container = main || document.body;
+    console.log('\n[详情面板 - 所有 h1 元素]');
+    var h1s = container.querySelectorAll('h1');
+    for (var i = 0; i < h1s.length; i++) {
+      var h = h1s[i];
+      console.log('  h1[' + i + ']: text="' + h.textContent.trim().substring(0, 60) + '" class="' + h.className + '"');
+    }
+
+    // 3. 所有 aria-label 元素（只打印有意义的）
+    console.log('\n[详情面板 - 所有 aria-label 元素]');
+    var allAria = container.querySelectorAll('[aria-label]');
+    var count = 0;
+    for (var j = 0; j < allAria.length; j++) {
+      var el = allAria[j];
+      var label = el.getAttribute('aria-label') || '';
+      if (!label || label.length === 0 || label.length > 200) continue;
+      count++;
+      var info = '  [' + count + '] <' + el.tagName + '>';
+      info += ' aria="' + label + '"';
+      var did = el.getAttribute('data-item-id') || '';
+      if (did) info += ' data-item-id="' + did + '"';
+      var cls = el.className;
+      if (cls && typeof cls === 'string') info += ' class="' + cls.substring(0, 40) + '"';
+      info += ' text="' + el.textContent.trim().substring(0, 40) + '"';
+      console.log(info);
+    }
+
+    // 4. 所有带 data-item-id 的按钮和链接
+    console.log('\n[详情面板 - data-item-id 按钮/链接]');
+    var itemEls = container.querySelectorAll('[data-item-id]');
+    for (var k = 0; k < itemEls.length; k++) {
+      var ie = itemEls[k];
+      if (ie.tagName !== 'BUTTON' && ie.tagName !== 'A') continue;
+      var iInfo = '  <' + ie.tagName + '>';
+      iInfo += ' data-item-id="' + ie.getAttribute('data-item-id') + '"';
+      var iAria = ie.getAttribute('aria-label') || '';
+      if (iAria) iInfo += ' aria="' + iAria + '"';
+      iInfo += ' text="' + ie.textContent.trim().substring(0, 40) + '"';
+      console.log(iInfo);
+    }
+
+    // 5. 尝试提取数据并输出
+    console.log('\n[尝试提取数据]');
+    try {
+      var result = extractDetail();
+      console.log('  提取结果:', JSON.stringify(result, null, 2));
+    } catch (e) {
+      console.log('  提取出错: ' + e.message);
+    }
+
+    // 6. 搜索结果卡片数量
+    var cards = document.querySelectorAll('div.Nv2PK');
+    console.log('\n[搜索结果]');
+    console.log('  div.Nv2PK 卡片数: ' + cards.length);
+
+    console.log('\n========== 诊断结束 ==========');
+    console.log('请把以上全部内容截图发给我，我来针对性修复。');
+  };
+
   // === 消息监听 ===
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     switch (msg.type) {
