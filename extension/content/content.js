@@ -1,12 +1,12 @@
 /**
- * Google Maps 数据采集 - Content Script v6
+ * Google Maps 数据采集 - Content Script v7
  * 注入到 Google Maps 页面中执行采集逻辑
  *
- * v6 核心改进（基于真实 DOM 诊断）：
- * 1. 名称提取：优先 div.fontHeadlineSmall（不是 h1！），排除 h1.fontTitleLarge（"结果"标题）
- * 2. 所有字段提取：排除搜索列表卡片 div.Nv2PK 内的元素
- * 3. 容器识别：在 role="main" 内通过关闭按钮定位详情面板子区域
- * 4. 网站提取：排除扩展注入的域名（keywordseverywhere 等）
+ * v7 核心改进：
+ * 1. 容器识别：通过关闭按钮+数据更新检测，确保获取的是当前点击商家的详情面板
+ * 2. 名称提取：对比卡片名称与详情名称，避免重复抓取
+ * 3. 评分提取：优先 aria-label 中的数字评分（如"4.2 stars"），而非星级图标
+ * 4. 等待详情更新：增加"名称变化检测"，确保详情面板内容已切换到新商家
  */
 
 (function () {
@@ -17,7 +17,7 @@
   window.__mapScraperInjected = true;
 
   const LOG_PREFIX = '[Maps Scraper]';
-  console.log(LOG_PREFIX + ' Content script v5 已注入');
+  console.log(LOG_PREFIX + ' Content script v7 已注入');
 
   // === 状态 ===
   let isRunning = false;
@@ -322,12 +322,15 @@
   }
 
   /**
-   * 提取评分
+   * 提取评分 - v7 改进
+   * 关键：排除搜索卡片内的评分，优先匹配包含小数点的评分（如4.2）
+   * 纯整数评分（如5）大概率是搜索卡片中的星级图标，应降低优先级
    */
   function extractRating(scope) {
     var rating = '';
+    var candidates = [];
 
-    // 策略1: aria-label 包含 "stars"
+    // 策略1: aria-label 包含 "X.X stars" 格式（小数点评分更可信）
     var starsEls = scope.querySelectorAll('[aria-label*="stars" i], [aria-label*="星" i]');
     for (var i = 0; i < starsEls.length; i++) {
       var sel = starsEls[i];
@@ -336,33 +339,73 @@
       var aria = sel.getAttribute('aria-label') || '';
       var match = aria.match(/(\d+\.?\d*)\s*stars?/i);
       if (match) {
-        rating = match[1];
-        log('extractRating: aria-label stars -> ' + rating);
-        return rating;
-      }
-      // 尝试从 textContent 取
-      var text = sel.textContent.trim();
-      var match2 = text.match(/^(\d+\.?\d*)$/);
-      if (match2) {
-        rating = match2[1];
-        log('extractRating: textContent -> ' + rating);
-        return rating;
+        var val = match[1];
+        candidates.push({ value: val, source: 'aria-label stars', hasDecimal: val.indexOf('.') !== -1 });
       }
     }
 
-    // 策略2: span[role="img"] (Google 用 role="img" 显示评分)
+    // 策略2: span[role="img"] (Google 用 role="img" 显示评分星级图标)
+    // 注意：这些可能是星级图标的aria-label（如"5 stars"），而非实际评分数字
     var imgEls = scope.querySelectorAll('span[role="img"][aria-label]');
     for (var j = 0; j < imgEls.length; j++) {
-      var aria2 = imgEls[j].getAttribute('aria-label') || '';
+      var imgEl = imgEls[j];
+      // 排除搜索列表卡片内的
+      if (imgEl.closest && imgEl.closest('div.Nv2PK')) continue;
+      var aria2 = imgEl.getAttribute('aria-label') || '';
       var match3 = aria2.match(/(\d+\.?\d*)/);
       if (match3 && parseFloat(match3[1]) <= 5) {
-        rating = match3[1];
-        log('extractRating: span[role=img] -> ' + rating);
-        return rating;
+        // 只添加如果还没被策略1覆盖，且标记为可能是图标
+        var alreadyHave = false;
+        for (var ci = 0; ci < candidates.length; ci++) {
+          if (candidates[ci].value === match3[1]) { alreadyHave = true; break; }
+        }
+        if (!alreadyHave) {
+          candidates.push({ value: match3[1], source: 'span[role=img]', hasDecimal: match3[1].indexOf('.') !== -1, likelyIcon: true });
+        }
       }
     }
 
-    // 策略3: 通用 fallback 选择器
+    // 策略3: 从包含评分的按钮文字中提取（如 "4.2 ☆"）
+    var ratingBtns = scope.querySelectorAll('button[aria-label*="stars" i]');
+    for (var bi = 0; bi < ratingBtns.length; bi++) {
+      var btn = ratingBtns[bi];
+      if (btn.closest && btn.closest('div.Nv2PK')) continue;
+      var btnText = btn.textContent.trim();
+      var btnMatch = btnText.match(/(\d+\.\d+)/);
+      if (btnMatch) {
+        var alreadyHave2 = false;
+        for (var ci2 = 0; ci2 < candidates.length; ci2++) {
+          if (candidates[ci2].value === btnMatch[1]) { alreadyHave2 = true; break; }
+        }
+        if (!alreadyHave2) {
+          candidates.push({ value: btnMatch[1], source: 'button text', hasDecimal: true });
+        }
+      }
+    }
+
+    // 选择最佳候选：优先小数评分（如4.2），然后非图标来源的整数
+    if (candidates.length > 0) {
+      // 优先有小数点的（更可能是实际评分）
+      var decimalCandidates = candidates.filter(function(c) { return c.hasDecimal; });
+      if (decimalCandidates.length > 0) {
+        rating = decimalCandidates[0].value;
+        log('extractRating: ' + rating + ' (source: ' + decimalCandidates[0].source + ')');
+        return rating;
+      }
+      // 降级：取第一个非图标候选
+      var nonIconCandidates = candidates.filter(function(c) { return !c.likelyIcon; });
+      if (nonIconCandidates.length > 0) {
+        rating = nonIconCandidates[0].value;
+        log('extractRating: ' + rating + ' (source: ' + nonIconCandidates[0].source + ')');
+        return rating;
+      }
+      // 最后降级
+      rating = candidates[0].value;
+      log('extractRating: ' + rating + ' (source: ' + candidates[0].source + ', fallback)');
+      return rating;
+    }
+
+    // 策略4: 通用 fallback 选择器
     var fallbackSels = [
       'span.BFQ3Mc',
       'div.F7nice > span:first-child',
@@ -706,8 +749,9 @@
 
   /**
    * 等待详情面板加载完成
+   * v7: 增加 expectedName 参数，等待详情名称与预期卡片名称匹配
    */
-  function waitForDetail(timeout) {
+  function waitForDetail(timeout, expectedName) {
     if (!timeout) timeout = 15000;
     return new Promise(function(resolve) {
       var resolved = false;
@@ -717,13 +761,15 @@
         var scope = container || document;
         // 检查是否有有效名称
         var name = extractName(scope);
-        // 检查是否有加载指示器
+        // 检查是否有加载指示器（详情面板的特征元素）
         var hasIndicator = !!(
           scope.querySelector('[aria-label*="Suggest an edit" i]') ||
           scope.querySelector('[aria-label*="Save" i]') ||
           scope.querySelector('[aria-label*="Share" i]') ||
           scope.querySelector('[aria-label*="Directions" i]') ||
-          scope.querySelector('[aria-label*="reviewlegaldisclosure" i]')
+          scope.querySelector('[aria-label*="reviewlegaldisclosure" i]') ||
+          scope.querySelector('[aria-label*="Save" i]') ||
+          scope.querySelector('button[aria-label*="Close" i]')
         );
         return { name: name, hasIndicator: hasIndicator };
       }
@@ -731,10 +777,13 @@
       // 立即检查
       var immediate = checkReady();
       if (immediate.name && immediate.hasIndicator) {
-        log('waitForDetail: 即时就绪, name="' + immediate.name + '"');
-        resolved = true;
-        resolve(true);
-        return;
+        // 如果有预期名称，检查是否匹配
+        if (!expectedName || !immediate.name || namesMatch(immediate.name, expectedName)) {
+          log('waitForDetail: 即时就绪, name="' + immediate.name + '"');
+          resolved = true;
+          resolve(true);
+          return;
+        }
       }
 
       var elapsed = 0;
@@ -750,6 +799,18 @@
         if (current.hasIndicator) hadIndicator = true;
 
         if (current.name) {
+          // v7: 如果有预期名称，检查名称是否已更新为预期商家
+          if (expectedName && current.name !== expectedName && !namesMatch(current.name, expectedName)) {
+            // 名称还没更新到目标商家，继续等待（但有超时保护）
+            stableCount = 0;
+            lastName = current.name;
+            if (elapsed < timeout * 0.7) {
+              log('waitForDetail: 名称="' + current.name + '" 不匹配预期="' + expectedName + '"，继续等待...');
+              return;
+            }
+            // 超过70%超时时间还不匹配，可能是名称略有不同，用降级逻辑
+          }
+
           if (current.name === lastName) {
             stableCount++;
           } else {
@@ -791,6 +852,22 @@
     });
   }
 
+  /**
+   * 比较两个名称是否匹配（容错：忽略大小写、多余空格、特殊字符）
+   */
+  function namesMatch(name1, name2) {
+    if (!name1 || !name2) return false;
+    // 标准化：转小写、去首尾空格、去多余空格
+    var n1 = name1.toLowerCase().trim().replace(/\s+/g, ' ');
+    var n2 = name2.toLowerCase().trim().replace(/\s+/g, ' ');
+    if (n1 === n2) return true;
+    // 一个包含另一个（处理截断情况）
+    if (n1.length > 5 && n2.length > 5) {
+      if (n1.indexOf(n2) !== -1 || n2.indexOf(n1) !== -1) return true;
+    }
+    return false;
+  }
+
   async function goBackToListAndWait(timeout) {
     if (!timeout) timeout = 8000;
     var backBtn = document.querySelector(
@@ -799,12 +876,22 @@
       'button[aria-label*="关闭" i]'
     );
     if (!backBtn) {
-      log('goBackToList: 未找到返回按钮');
-      return true;
+      log('goBackToList: 未找到返回按钮，尝试用 Escape');
+      // 尝试按 Escape 返回
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+      await randomDelay(500, 1000);
+    } else {
+      backBtn.click();
+      log('goBackToList: 已点击返回');
     }
-    backBtn.click();
-    log('goBackToList: 已点击返回');
-    return waitForResultsPanel(timeout);
+    // 等待搜索结果面板恢复
+    await randomDelay(1000, 2000);
+    var result = await waitForResultsPanel(timeout);
+    if (result) {
+      // 额外等待卡片稳定
+      await randomDelay(500, 1000);
+    }
+    return result;
   }
 
   async function loadMoreResults(target) {
@@ -870,7 +957,7 @@
     var success = 0;
     var failed = 0;
 
-    log('启动采集 v6，目标: ' + targetCount + ' 条');
+    log('启动采集 v7，目标: ' + targetCount + ' 条');
     send('progress', {
       status: 'running', current: 0, total: 0, success: 0, failed: 0,
       message: '等待搜索结果加载...',
@@ -935,7 +1022,8 @@
         freshCards[i].click();
         await randomDelay(2000, 3500);
 
-        var detailReady = await waitForDetail(15000);
+        // v7: 传入预期名称，等待详情面板更新到该商家
+        var detailReady = await waitForDetail(15000, cardName);
         if (hasCaptcha()) { send('captcha', {}); isRunning = false; return; }
 
         if (!detailReady) {
@@ -951,21 +1039,36 @@
         var data = extractDetail();
 
         if (data && data.name) {
-          // 验证详情是否更新
-          if (prevDetailName && data.name === prevDetailName && cardName && data.name !== cardName) {
-            log('第 ' + (i + 1) + ' 条: 详情未更新，重试...');
+          // v7: 验证详情名称与卡片名称是否匹配
+          if (cardName && !namesMatch(data.name, cardName)) {
+            log('第 ' + (i + 1) + ' 条: 详情名称"' + data.name + '"与卡片名称"' + cardName + '"不匹配，等待更新...');
+            // 等待更长时间让详情面板更新
             await randomDelay(2000, 3000);
             var retryData = extractDetail();
-            if (retryData && retryData.name && retryData.name !== prevDetailName) {
+            if (retryData && retryData.name && (namesMatch(retryData.name, cardName) || retryData.name !== data.name)) {
               data = retryData;
+              log('第 ' + (i + 1) + ' 条: 重试后名称="' + data.name + '"');
             } else {
-              failed++;
-              log('第 ' + (i + 1) + ' 条: 详情仍未更新，跳过');
-              await goBackToListAndWait();
-              await randomDelay(1000, 2000);
-              prevDetailName = '';
-              continue;
+              // 详情确实没有更新，可能是这个商家没有详情页面
+              // 但如果名称有效且不是上一个商家的，也接受
+              if (prevDetailName && data.name === prevDetailName) {
+                failed++;
+                log('第 ' + (i + 1) + ' 条: 详情仍为上一个商家，跳过');
+                await goBackToListAndWait();
+                await randomDelay(1000, 2000);
+                prevDetailName = '';
+                continue;
+              }
             }
+          }
+
+          // 二次验证：如果数据与上一个完全一样（所有字段），也标记失败
+          if (prevDetailName && data.name === prevDetailName && i > 0) {
+            log('第 ' + (i + 1) + ' 条: 数据与上一条重复，跳过');
+            failed++;
+            await goBackToListAndWait();
+            await randomDelay(1000, 2000);
+            continue;
           }
 
           send('data', { item: data, index: i });
@@ -1058,7 +1161,7 @@
       '  console.log("div.Nv2PK: "+document.querySelectorAll("div.Nv2PK").length+" 个");',
       '  console.log("\\n========== 诊断结束 ==========");',
       '};',
-      'console.log("[Maps Scraper v5] 诊断函数就绪，F12 输入 diagMaps() 使用");'
+      'console.log("[Maps Scraper v7] 诊断函数就绪，F12 输入 diagMaps() 使用");'
     ].join('\n');
     var diagScript = document.createElement('script');
     diagScript.textContent = diagCode;
@@ -1101,5 +1204,5 @@
   });
 
   chrome.runtime.sendMessage({ type: 'contentReady' }).catch(() => {});
-  log('v5 已就绪，等待指令...');
+  log('v7 已就绪，等待指令...');
 })();
