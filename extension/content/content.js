@@ -1,13 +1,12 @@
 /**
- * Google Maps 数据采集 - Content Script v5
+ * Google Maps 数据采集 - Content Script v6
  * 注入到 Google Maps 页面中执行采集逻辑
  *
- * v5 核心改进：
- * 1. 智能容器识别：通过检测详情面板是否实际加载了商家信息来判断
- * 2. 多策略名称提取：h1 → h2 → class-based → 降级
- * 3. 精准数据提取：全部基于容器内查找，不污染搜索结果页
- * 4. 支持弹窗式+侧边栏式两种布局
- * 5. 诊断函数内嵌在扩展中，也可F12直接粘贴使用
+ * v6 核心改进（基于真实 DOM 诊断）：
+ * 1. 名称提取：优先 div.fontHeadlineSmall（不是 h1！），排除 h1.fontTitleLarge（"结果"标题）
+ * 2. 所有字段提取：排除搜索列表卡片 div.Nv2PK 内的元素
+ * 3. 容器识别：在 role="main" 内通过关闭按钮定位详情面板子区域
+ * 4. 网站提取：排除扩展注入的域名（keywordseverywhere 等）
  */
 
 (function () {
@@ -82,78 +81,70 @@
    * - 容器可见且尺寸足够大
    *
    * 策略优先级：
-   * 1. role="dialog"（弹窗式）
-   * 2. aria-modal="true"
-   * 3. role="main" 内的详情区域（侧边栏式）
-   * 4. 通过关闭按钮向上找
+   * v6 策略：
+   * 1. role="dialog"（可见的弹窗式）
+   * 2. role="main" 内通过关闭/返回按钮定位详情面板子容器
+   * 3. 降级：直接用 role="main" 但名称提取用详情面板专属选择器
    */
   function findDetailContainer() {
-    // 策略1: 弹窗式详情面板 - role="dialog"
+    // 策略1: 可见的弹窗式详情面板 - role="dialog"
     var dialogs = document.querySelectorAll('div[role="dialog"]');
     for (var di = 0; di < dialogs.length; di++) {
       var d = dialogs[di];
-      // 检查弹窗是否可见且有内容
-      if (d.offsetHeight > 100 && d.querySelectorAll('h1, h2, button').length >= 2) {
-        log('findDetailContainer: 找到可见的 role="dialog" (高=' + d.offsetHeight + ')');
+      if (d.offsetHeight > 100) {
+        log('findDetailContainer: 可见的 role="dialog" (高=' + d.offsetHeight + ')');
         return d;
       }
     }
 
-    // 策略1.5: aria-modal="true"
+    // 策略1.5: aria-modal="true" 可见
     var modals = document.querySelectorAll('[aria-modal="true"]');
     for (var mi = 0; mi < modals.length; mi++) {
-      var m = modals[mi];
-      if (m.offsetHeight > 100) {
-        log('findDetailContainer: 找到可见的 aria-modal (高=' + m.offsetHeight + ')');
-        return m;
+      var mo = modals[mi];
+      if (mo.offsetHeight > 100) {
+        log('findDetailContainer: 可见的 aria-modal (高=' + mo.offsetHeight + ')');
+        return mo;
       }
     }
 
-    // 策略2: role="main" - 但要确认不是搜索结果页
+    // 策略2: role="main" 存在时，通过关闭/返回按钮定位详情面板子容器
     var main = document.querySelector('div[role="main"]');
     if (main) {
-      // 检查 role="main" 内是否有详情面板特征（不只是搜索列表）
-      // 详情面板特征：有包含评分stars的元素，或有关闭/返回按钮
-      var hasStars = !!main.querySelector('[aria-label*="stars" i], [aria-label*="星" i]');
-      var hasCloseBtn = !!main.querySelector('button[aria-label*="Close" i], button[aria-label*="关闭" i], button[aria-label*="Back" i], button[aria-label*="back" i]');
-      var hasEditBtn = !!main.querySelector('[aria-label*="Suggest an edit" i], [aria-label*="修改" i]');
-      var hasSaveBtn = !!main.querySelector('[aria-label*="Save" i]');
-
-      if (hasStars || hasCloseBtn || hasEditBtn || hasSaveBtn) {
-        log('findDetailContainer: role="main" 包含详情特征 (stars=' + hasStars + ', close=' + hasCloseBtn + ', edit=' + hasEditBtn + ', save=' + hasSaveBtn + ')');
-        return main;
-      }
-
-      // 如果 role="main" 存在但没有详情特征，可能是详情还没加载完
-      // 检查是否有大量按钮（搜索列表页通常只有少量按钮）
-      var btns = main.querySelectorAll('button');
-      if (btns.length > 5) {
-        log('findDetailContainer: role="main" 有 ' + btns.length + ' 个按钮，可能包含详情');
-        return main;
-      }
-    }
-
-    // 策略3: 通过关闭按钮向上查找
-    var closeSelectors = [
-      'button[aria-label="Close"]', 'button[aria-label="close"]',
-      'button[aria-label*="关闭"]', 'button[aria-label*="Back"]', 'button[aria-label*="back"]'
-    ];
-    for (var ci = 0; ci < closeSelectors.length; ci++) {
-      var closeBtn = document.querySelector(closeSelectors[ci]);
-      if (closeBtn) {
-        var parent = closeBtn.parentElement;
-        for (var up = 0; up < 8 && parent; up++) {
-          if (parent.offsetWidth > 300 && parent.offsetHeight > 200) {
-            log('findDetailContainer: 通过关闭按钮找到容器 (宽=' + parent.offsetWidth + ', 高=' + parent.offsetHeight + ')');
-            return parent;
+      // 在 role="main" 内找关闭/返回按钮，然后向上找详情面板子区域
+      var closeSelectors = [
+        'button[aria-label="Close"]', 'button[aria-label="close"]',
+        'button[aria-label*="关闭"]', 'button[aria-label*="Back"]',
+        'button[aria-label*="back"]', 'button[aria-label*="返回"]'
+      ];
+      for (var ci = 0; ci < closeSelectors.length; ci++) {
+        var closeBtn = main.querySelector(closeSelectors[ci]);
+        if (closeBtn) {
+          // 从关闭按钮向上找容器（最多10层），找宽度>300的
+          var parent = closeBtn.parentElement;
+          for (var up = 0; up < 10 && parent && parent !== main; up++) {
+            if (parent.offsetWidth > 300 && parent.offsetHeight > 200) {
+              log('findDetailContainer: 通过关闭按钮找到详情子容器 (宽=' + parent.offsetWidth + ', 高=' + parent.offsetHeight + ')');
+              return parent;
+            }
+            parent = parent.parentElement;
           }
-          parent = parent.parentElement;
+          // 如果关闭按钮在 role="main" 内，说明 role="main" 就是详情面板
+          log('findDetailContainer: 关闭按钮在 role="main" 内，使用 role="main"');
+          return main;
         }
       }
+
+      // 没有找到关闭按钮，检查是否有详情特征
+      var hasStars = !!main.querySelector('[aria-label*="stars" i]');
+      var hasSave = !!main.querySelector('[aria-label*="Save" i]');
+      if (hasStars || hasSave) {
+        log('findDetailContainer: role="main" 有详情特征 (stars=' + hasStars + ', save=' + hasSave + ')');
+        return main;
+      }
     }
 
-    // 策略4: 回退到 document
-    log('findDetailContainer: 未找到特定容器，使用 document');
+    // 策略3: 回退
+    log('findDetailContainer: 未找到详情容器，使用 document');
     return null;
   }
 
@@ -219,59 +210,81 @@
   }
 
   /**
-   * 提取商家名称 - 多策略
+   * 提取商家名称 - v6 多策略
+   *
+   * 关键发现：Google Maps 的商家名称可能在：
+   * - h1.DUwDvf（传统侧边栏布局）
+   * - h1.fontHeadlineLarge（某些布局）
+   * - div.qBF1Pd.fontHeadlineSmall（弹窗式/新版布局，class含混淆名）
+   * - h1.fontTitleLarge 之后的兄弟元素（搜索标题和详情标题在同级）
+   *
+   * 策略优先级：
+   * 1. 排除 h1.fontTitleLarge（这是"结果"标题，不是商家名）
+   * 2. 在详情面板子容器内找 div.fontHeadlineSmall（最常见）
+   * 3. h1（排除已知的无效 class）
+   * 4. h2
    */
   function extractName(scope) {
-    // 策略1: h1.DUwDvf（Google Maps 当前最常见的主选择器）
-    var h1 = scope.querySelector('h1.DUwDvf');
-    if (h1 && isValidName(h1.textContent.trim())) {
-      log('extractName: h1.DUwDvf -> "' + h1.textContent.trim().substring(0, 50) + '"');
-      return h1.textContent.trim();
+    // 策略1: div.fontHeadlineSmall（你的 Google Maps 布局的商家名称在这里）
+    var headlineDivs = scope.querySelectorAll('div[class*="fontHeadlineSmall"], div.qBF1Pd');
+    // 过滤：只取可见的、文字足够长的、有效的
+    for (var di = 0; di < headlineDivs.length; di++) {
+      var div = headlineDivs[di];
+      var divText = div.textContent.trim();
+      // 跳过不可见的
+      if (div.offsetHeight === 0) continue;
+      // 跳过搜索列表卡片里的商家名（card Nv2PK 内的）
+      if (div.closest('div.Nv2PK')) continue;
+      if (isValidName(divText)) {
+        log('extractName: div.fontHeadlineSmall -> "' + divText.substring(0, 60) + '"');
+        return divText;
+      }
     }
 
-    // 策略2: h1.fontHeadlineLarge
-    h1 = scope.querySelector('h1.fontHeadlineLarge');
-    if (h1 && isValidName(h1.textContent.trim())) {
-      log('extractName: h1.fontHeadlineLarge -> "' + h1.textContent.trim().substring(0, 50) + '"');
-      return h1.textContent.trim();
-    }
-
-    // 策略3: h1 with specific class patterns
-    var h1Selectors = [
-      'h1[class*="fontHeadline"]',
-      'h1.lANesb',
-      'h1'
-    ];
+    // 策略2: h1 但排除 h1.fontTitleLarge（"结果"标题）
     var allH1 = scope.querySelectorAll('h1');
     for (var i = 0; i < allH1.length; i++) {
-      var text = allH1[i].textContent.trim();
+      var h = allH1[i];
+      var text = h.textContent.trim();
+      // 排除 "结果" 标题（class含 fontTitlelarge）
+      if (h.className && h.className.indexOf('fontTitlelarge') !== -1) continue;
+      // 排除 "结果" 标题（class含 fontTitleLarge）
+      if (h.className && h.className.indexOf('fontTitleLarge') !== -1) continue;
+      // 排除搜索列表卡片内的 h1
+      if (h.closest && h.closest('div.Nv2PK')) continue;
       if (isValidName(text)) {
-        log('extractName: h1[' + i + '] class="' + allH1[i].className.substring(0, 40) + '" -> "' + text.substring(0, 50) + '"');
+        log('extractName: h1 class="' + h.className.substring(0, 40) + '" -> "' + text.substring(0, 50) + '"');
         return text;
       }
     }
 
-    // 策略4: h2 fallback
+    // 策略3: h1.DUwDvf / h1.fontHeadlineLarge（传统布局）
+    var h1Specific = scope.querySelector('h1.DUwDvf') || scope.querySelector('h1.fontHeadlineLarge');
+    if (h1Specific && isValidName(h1Specific.textContent.trim())) {
+      log('extractName: h1 specific -> "' + h1Specific.textContent.trim().substring(0, 50) + '"');
+      return h1Specific.textContent.trim();
+    }
+
+    // 策略4: h2
     var allH2 = scope.querySelectorAll('h2');
     for (var j = 0; j < allH2.length; j++) {
       var h2text = allH2[j].textContent.trim();
       if (isValidName(h2text)) {
-        log('extractName: h2[' + j + '] -> "' + h2text.substring(0, 50) + '"');
+        log('extractName: h2 -> "' + h2text.substring(0, 50) + '"');
         return h2text;
       }
     }
 
-    // 策略5: 大号文字 div（有些布局用 div 而非 h1 显示名称）
-    var bigTextSelectors = [
-      'div.fontHeadlineLarge',
-      'div[class*="fontHeadline"]',
-      'div[style*="font-size: 2"]',
-      'div[style*="font-size: 1.5"]'
-    ];
-    var bigEl = queryFirst(scope, bigTextSelectors);
-    if (bigEl && isValidName(bigEl.textContent.trim())) {
-      log('extractName: div.fontHeadlineLarge -> "' + bigEl.textContent.trim().substring(0, 50) + '"');
-      return bigEl.textContent.trim();
+    // 策略5: 任何 fontHeadline div
+    var anyHeadline = scope.querySelectorAll('div[class*="fontHeadline"]');
+    for (var k = 0; k < anyHeadline.length; k++) {
+      var dText = anyHeadline[k].textContent.trim();
+      if (anyHeadline[k].offsetHeight === 0) continue;
+      if (anyHeadline[k].closest && anyHeadline[k].closest('div.Nv2PK')) continue;
+      if (isValidName(dText)) {
+        log('extractName: div fontHeadline -> "' + dText.substring(0, 50) + '"');
+        return dText;
+      }
     }
 
     log('extractName: 所有策略均未找到有效名称');
@@ -317,7 +330,10 @@
     // 策略1: aria-label 包含 "stars"
     var starsEls = scope.querySelectorAll('[aria-label*="stars" i], [aria-label*="星" i]');
     for (var i = 0; i < starsEls.length; i++) {
-      var aria = starsEls[i].getAttribute('aria-label') || '';
+      var sel = starsEls[i];
+      // 排除搜索列表卡片内的评分
+      if (sel.closest && sel.closest('div.Nv2PK')) continue;
+      var aria = sel.getAttribute('aria-label') || '';
       var match = aria.match(/(\d+\.?\d*)\s*stars?/i);
       if (match) {
         rating = match[1];
@@ -325,7 +341,7 @@
         return rating;
       }
       // 尝试从 textContent 取
-      var text = starsEls[i].textContent.trim();
+      var text = sel.textContent.trim();
       var match2 = text.match(/^(\d+\.?\d*)$/);
       if (match2) {
         rating = match2[1];
@@ -377,7 +393,10 @@
     // 策略1: aria-label 包含 "reviews"
     var reviewEls = scope.querySelectorAll('[aria-label*="reviews" i], [aria-label*="条评价" i], [aria-label*="评论" i], [aria-label*="Google reviews" i]');
     for (var i = 0; i < reviewEls.length; i++) {
-      var aria = reviewEls[i].getAttribute('aria-label') || '';
+      var rel = reviewEls[i];
+      // 排除搜索列表卡片内的
+      if (rel.closest && rel.closest('div.Nv2PK')) continue;
+      var aria = rel.getAttribute('aria-label') || '';
       var match = aria.match(/([\d,]+)\s*reviews?/i);
       if (match) {
         reviews = match[1].replace(/,/g, '');
@@ -428,8 +447,11 @@
     // 策略1: aria-label 包含 "Address:"
     var addrEls = scope.querySelectorAll('[aria-label*="Address" i], [aria-label*="地址" i]');
     for (var i = 0; i < addrEls.length; i++) {
-      var aria = addrEls[i].getAttribute('aria-label') || '';
-      var dataId = addrEls[i].getAttribute('data-item-id') || '';
+      var el = addrEls[i];
+      // 排除搜索列表卡片内的元素
+      if (el.closest && el.closest('div.Nv2PK')) continue;
+      var aria = el.getAttribute('aria-label') || '';
+      var dataId = el.getAttribute('data-item-id') || '';
 
       // 优先匹配 "Address: xxx" 格式
       var match = aria.match(/^Address:\s*(.+)/i) || aria.match(/^地址[\uFF1A:]\s*(.+)/);
@@ -498,7 +520,10 @@
     // 策略1: aria-label 包含 "Phone:"
     var phoneEls = scope.querySelectorAll('[aria-label*="Phone" i], [aria-label*="电话" i]');
     for (var i = 0; i < phoneEls.length; i++) {
-      var aria = phoneEls[i].getAttribute('aria-label') || '';
+      var pel = phoneEls[i];
+      // 排除搜索列表卡片内的元素
+      if (pel.closest && pel.closest('div.Nv2PK')) continue;
+      var aria = pel.getAttribute('aria-label') || '';
 
       // "Phone: +1 xxx" 格式
       var match = aria.match(/^Phone:\s*(.+)/i) || aria.match(/^电话[\uFF1A:]\s*(.+)/);
@@ -509,8 +534,8 @@
       }
 
       // aria-label 只是 "Phone"，取 textContent
-      if ((aria.toLowerCase() === 'phone' || aria.toLowerCase() === '电话') && phoneEls[i].textContent.trim()) {
-        phone = getBtnText(phoneEls[i]).trim();
+      if ((aria.toLowerCase() === 'phone' || aria.toLowerCase() === '电话') && pel.textContent.trim()) {
+        phone = getBtnText(pel).trim();
         if (phone && phone.length > 5) {
           log('extractPhone: aria-label+textContent -> "' + phone + '"');
           return phone;
@@ -589,18 +614,34 @@
       }
     }
 
-    // 策略3: 指向外部网站的链接（排除 google.com 域名）
+    // 策略3: 指向外部网站的链接（排除 google.com 和已知扩展域名）
+    // 排除已知非商家网站域名
+    var excludedDomains = [
+      'google.com', 'gstatic.com', 'maps.googleapis.com',
+      'keywordseverywhere.com', 'moz.com', 'semrush.com',
+      'ahrefs.com', 'similarweb.com', 'extensions', 'chrome-extension'
+    ];
     var allLinks = scope.querySelectorAll('a[href]');
     for (var j = 0; j < allLinks.length; j++) {
       var link = allLinks[j];
       var linkHref = link.href || '';
       if (!linkHref) continue;
-      if (linkHref.indexOf('google.com') !== -1) continue;
-      if (linkHref.indexOf('gstatic.com') !== -1) continue;
-      if (linkHref.indexOf('maps.gstatic.com') !== -1) continue;
       if (linkHref.indexOf('javascript:') === 0) continue;
-      // 有效的 URL
+
+      // 排除已知域名
+      var isExcluded = false;
+      for (var ex = 0; ex < excludedDomains.length; ex++) {
+        if (linkHref.indexOf(excludedDomains[ex]) !== -1) {
+          isExcluded = true;
+          break;
+        }
+      }
+      if (isExcluded) continue;
+
+      // 有效的 URL 且不在搜索结果卡片内
       if ((linkHref.indexOf('http://') === 0 || linkHref.indexOf('https://') === 0) && linkHref.indexOf('.') > 6) {
+        // 排除搜索列表卡片内的链接
+        if (link.closest && link.closest('div.Nv2PK')) continue;
         website = linkHref;
         log('extractWebsite: external link -> "' + website + '"');
         return website;
@@ -829,7 +870,7 @@
     var success = 0;
     var failed = 0;
 
-    log('启动采集 v5，目标: ' + targetCount + ' 条');
+    log('启动采集 v6，目标: ' + targetCount + ' 条');
     send('progress', {
       status: 'running', current: 0, total: 0, success: 0, failed: 0,
       message: '等待搜索结果加载...',
